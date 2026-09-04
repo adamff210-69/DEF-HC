@@ -101,6 +101,9 @@ def main() -> int:
     p.add_argument("--seed", type=int, default=0xDEF2)
     p.add_argument("--out-weights", type=Path, required=True)
     p.add_argument("--out-metrics", type=Path, default=None)
+    p.add_argument("--out-scores", type=Path, default=None,
+                   help="optional JSONL of per-example test scores "
+                        "{text, label, ml_score} for threshold/PR analysis")
     args = p.parse_args()
 
     import random
@@ -174,6 +177,9 @@ def main() -> int:
             **binary_metrics(y_test, ml_scores, 0.5),
             "auc": auc_rank(y_test, ml_scores),
         },
+        "embedding_logistic_best_f1_threshold": {
+            **best_threshold(ml_scores), "auc": auc_rank(y_test, ml_scores),
+        },
         "demo_heuristic_fusion": {
             **best_threshold(demo_scores), "auc": auc_rank(y_test, demo_scores),
         },
@@ -182,10 +188,18 @@ def main() -> int:
         },
     }
 
+    # per-example ML scores power downstream threshold/PR analysis w/o re-embed
+    if args.out_scores:
+        args.out_scores.parent.mkdir(parents=True, exist_ok=True)
+        with args.out_scores.open("w", encoding="utf-8") as fh:
+            for (text, gold), score in zip(test, ml_scores):
+                fh.write(json.dumps({"text": text, "label": gold,
+                                     "ml_score": round(float(score), 6)}) + "\n")
+
     print("\nheld-out test metrics:")
     for name, m in results.items():
         if isinstance(m, dict) and "f1" in m:
-            print(f"  {name:<24} acc={m['accuracy']:.4f} prec={m['precision']:.4f} "
+            print(f"  {name:<40} acc={m['accuracy']:.4f} prec={m['precision']:.4f} "
                   f"rec={m['recall']:.4f} f1={m['f1']:.4f} auc={m['auc']} (t={m['threshold']})")
 
     args.out_weights.parent.mkdir(parents=True, exist_ok=True)
