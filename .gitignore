@@ -1,0 +1,26 @@
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# ledgers / runtime data
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+defend_hc2.db*
+
+# trained weight artifacts (regenerate via scripts/train_classifier.py)
+defend_hc2/weights/*.json
+!defend_hc2/weights/.gitkeep
+
+# secrets — never commit
+.env
+*.pem
+master_secret*

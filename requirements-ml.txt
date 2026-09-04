@@ -1,0 +1,6 @@
+# Optional ML extra for ContentRiskAnalyzer(demo_mode=False).
+# Loads BAAI/bge-small-en-v1.5 via sentence-transformers and the logistic
+# weights produced by scripts/train_classifier.py.
+-r requirements.txt
+sentence-transformers>=3.0
+torch>=2.3
