@@ -216,6 +216,7 @@ defend_hc2/
   constants.py exceptions.py results.py cli.py
 scripts/train_classifier.py          # trains the L1 embedding classifier weights
 scripts/evaluate_complementarity.py  # layer-coverage attack matrix evaluation
+scripts/ci/test.yml                  # CI workflow template — copy to .github/workflows/
 tests/                               # 164 tests across all layers + attacks + API
 ```
 
