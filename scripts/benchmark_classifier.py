@@ -89,6 +89,10 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--dataset", type=Path, required=True)
+    p.add_argument("--eval-file", type=Path, default=None,
+                   help="optional JSONL used ONLY as the test set (e.g. an "
+                        "official test split). Prevents near-duplicate leakage "
+                        "that a random re-split can introduce.")
     p.add_argument("--model", default="BAAI/bge-small-en-v1.5")
     p.add_argument("--test-frac", type=float, default=0.2)
     p.add_argument("--epochs", type=int, default=300)
@@ -102,14 +106,20 @@ def main() -> int:
     import random
 
     data = load_jsonl(args.dataset)
-    rng = random.Random(args.seed)
-    rng.shuffle(data)
-    n_test = max(1, int(len(data) * args.test_frac))
-    test, train = data[:n_test], data[n_test:]
+    if args.eval_file:
+        train = data
+        test = load_jsonl(args.eval_file)
+        split_desc = "official eval file"
+    else:
+        rng = random.Random(args.seed)
+        rng.shuffle(data)
+        n_test = max(1, int(len(data) * args.test_frac))
+        test, train = data[:n_test], data[n_test:]
+        split_desc = f"random {args.test_frac:.0%} hold-out"
     y_train = [y for _, y in train]
     y_test = [y for _, y in test]
-    print(f"dataset: {len(data)} rows -> train {len(train)} "
-          f"({sum(y_train)} inj) | held-out test {len(test)} ({sum(y_test)} inj)")
+    print(f"dataset: train {len(train)} ({sum(y_train)} inj) | "
+          f"held-out test {len(test)} ({sum(y_test)} inj) [{split_desc}]")
 
     # ------------------------------------------------- embeddings + training
     import numpy as np
@@ -157,6 +167,8 @@ def main() -> int:
 
     results = {
         "dataset": str(args.dataset), "n_train": len(train), "n_test": len(test),
+        "split": split_desc,
+        "eval_file": str(args.eval_file) if args.eval_file else None,
         "model": args.model, "seed": args.seed,
         "embedding_logistic": {
             **binary_metrics(y_test, ml_scores, 0.5),
