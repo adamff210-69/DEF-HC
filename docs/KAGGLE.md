@@ -30,6 +30,11 @@ All artifacts persist in `/kaggle/working` as notebook output.
 ## Gotchas
 
 - The implementation branch is `arena/01a06c45-def-hc`; `main` is a README stub.
+- **If `import defend_hc2` fails after `pip install -e` in the same kernel**:
+  editable installs register at interpreter startup, so the already-running
+  kernel can't see the package. Either restart the kernel once, or add
+  `import sys; sys.path.insert(0, "/kaggle/working/DEF-HC")` before importing
+  (the notebook's Cell 3 already does this for you).
 - Cell 5 is idempotent — delete the weights file to retrain (e.g. with your own
   `--dataset` JSONL).
 - Cell 7 wipes its ledger at start, so it is fully re-runnable.
