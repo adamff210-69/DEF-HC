@@ -119,4 +119,7 @@ python scripts/benchmark_classifier.py \
   --eval-file pi-test.jsonl --cal-file slp-cal.jsonl \
   --class-balance --target-recall 0.98 --epochs 400 \
   --out-weights weights/bge-final.json --out-metrics bench-metrics-final.json
+
+# end-to-end smoke test with the release weights (decisions + chain asserted)
+python scripts/run_final_demo.py --weights weights/bge-final.json --check
 ```
