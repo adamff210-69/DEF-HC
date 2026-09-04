@@ -217,6 +217,8 @@ defend_hc2/
 scripts/train_classifier.py          # trains the L1 embedding classifier weights
 scripts/evaluate_complementarity.py  # layer-coverage attack matrix evaluation
 scripts/ci/test.yml                  # CI workflow template — copy to .github/workflows/
+notebooks/defend-hc2-kaggle-ml-mode.ipynb  # ready-to-upload Kaggle notebook (ML mode)
+docs/QUICKSTART.md docs/KAGGLE.md    # step-by-step guides
 tests/                               # 164 tests across all layers + attacks + API
 ```
 
