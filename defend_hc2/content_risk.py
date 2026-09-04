@@ -29,6 +29,7 @@ from typing import Any, Iterable, Sequence
 
 from defend_hc2 import normalize as _norm
 from defend_hc2.canonicalization import Canonicalizer
+from defend_hc2.embedder import get_sentence_transformer
 from defend_hc2.constants import (
     DEFAULT_EMBEDDING_MODEL,
     FUSION_WEIGHTS,
@@ -220,20 +221,13 @@ class ContentRiskAnalyzer:
                 f"{weights_path!r}. Train them with scripts/train_classifier.py "
                 "or use demo_mode=True."
             )
-        try:
-            from sentence_transformers import SentenceTransformer  # noqa: PLC0415
-        except ImportError as exc:  # pragma: no cover - environment dependent
-            raise EmbeddingBackendUnavailableError(
-                "sentence-transformers is required when demo_mode=False; "
-                "install the 'ml' extra (pip install -r requirements-ml.txt)"
-            ) from exc
 
         blob = json.loads(path.read_text(encoding="utf-8"))
         self._clf_weights = [float(w) for w in blob["weights"]]
         self._clf_bias = float(blob["bias"])
         self._clf_meta = {k: v for k, v in blob.items() if k not in {"weights"}}
         self.model_name = blob.get("model", self.model_name)
-        self._model = SentenceTransformer(self.model_name)
+        self._model = get_sentence_transformer(self.model_name)
 
     def _embed(self, texts: Sequence[str]) -> list[list[float]]:
         """L2-normalized embeddings; requires the embedding backend."""

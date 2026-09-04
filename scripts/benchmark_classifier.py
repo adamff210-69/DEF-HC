@@ -1,23 +1,17 @@
-"""Benchmark the Layer-1 injection classifier on real labeled corpora.
+"""Benchmark the Layer-1 injection classifier on real labeled corpora
+(spec Phases 5, 11, 12, 13).
 
-Upgrades over the plain logistic benchmark:
+Protocol guarantees:
 
-* **multi-dataset training** — pass several ``--dataset`` JSONL files; they
-  are concatenated (single-corpus quirks are the enemy of generalization);
-* **class balancing** — inverse-frequency weighting in the logistic loss so
-  the base rate of each corpus does not bias the decision boundary;
-* **stacked meta-model** — a small logistic over ``[base_p, lexical,
-  structural, obfuscation]`` features, trained on the *validation* split
-  (the base embedder sees only the train split — honest stacking);
-* **validation-calibrated threshold** — the operating point is chosen on the
-  *validation* split to hit a target recall (e.g. catch 95% of attacks) with
-  the best precision available — never tuned on the test set.  Pass
-  ``--cal-file`` to calibrate/stack on a held-out slice of the *deployment*
-  distribution (the distribution must match where the threshold will be
-  used; thresholds do not transfer across corpora).
-
-Every reported metric is computed on an untouched test split
-(``--eval-file`` for an official/foreign corpus, else a random hold-out).
+* sklearn base model; ``C`` selected on calibration PR-AUC (Phase 3);
+* the deployment threshold comes from CALIBRATION data only — target recall
+  chosen a priori (Phase 5); test data is touched once, for final metrics;
+* every test-derived "best" operating point is labelled
+  ``ORACLE / TEST-ONLY / NOT DEPLOYABLE`` and never enters the weights file;
+* baselines are threshold-calibrated with the SAME criterion on calibration
+  data; explicitly-labelled DUMMY baselines (always-pos/neg) are reported
+  separately and never treated as competitive defenses (Phase 12);
+* full Phase-13 metrics with seeded bootstrap CIs for headline models.
 
 Input JSONL: ``{"text": "...", "label": 0|1}`` per line (1 = injection).
 """
@@ -27,214 +21,129 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import re
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # allow bare run
 
-_B64ISH = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9+/=])")
-_LEET = re.compile(r"[0-9]{2,}|[a-zA-Z][0-9][a-zA-Z]|[a-zA-Z][0-9]{2,}")
+from defend_hc2.modeling import (
+    assert_disjoint_roles,
+    bootstrap_cis,
+    calibrate_thresholds,
+    environment_block,
+    exact_duplicate_count,
+    file_sha256,
+    fit_classifier,
+    full_metric_report,
+    git_commit,
+    load_many,
+    remove_overlap,
+)
+
+ORACLE = "ORACLE / TEST-ONLY / NOT DEPLOYABLE"
 
 
-def load_jsonl(path: Path) -> list[tuple[str, int]]:
-    rows = []
-    with path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                row = json.loads(line)
-                rows.append((str(row["text"]), int(row["label"])))
-    if not rows:
-        raise SystemExit(f"no rows in {path}")
-    return rows
-
-
-def load_many(paths: list[Path]) -> list[tuple[str, int]]:
-    out: list[tuple[str, int]] = []
-    for path in paths:
-        rows = load_jsonl(path)
-        print(f"  loaded {len(rows):>6} rows from {path}")
-        out.extend(rows)
-    return out
-
-
-# ------------------------------------------------------------------ metrics
-def binary_metrics(gold, score, threshold):
-    pred = [s >= threshold for s in score]
-    tp = sum(g and p for g, p in zip(gold, pred))
-    fp = sum((not g) and p for g, p in zip(gold, pred))
-    fn = sum(g and not p for g, p in zip(gold, pred))
-    tn = sum((not g) and not p for g, p in zip(gold, pred))
-    acc = (tp + tn) / max(1, len(gold))
-    prec = tp / max(1, tp + fp)
-    rec = tp / max(1, tp + fn)
-    spec = tn / max(1, tn + fp)
-    f1 = 2 * prec * rec / max(1e-9, prec + rec)
-    return {"threshold": round(float(threshold), 4),
-            "accuracy": round(acc, 4), "balanced_accuracy": round((rec + spec) / 2, 4),
-            "precision": round(prec, 4), "recall": round(rec, 4),
-            "f1": round(f1, 4), "tp": tp, "fp": fp, "fn": fn, "tn": tn}
-
-
-def auc_rank(gold, score):
-    pairs = sorted(zip(score, gold))
-    rank_sum, n_pos = 0.0, sum(gold)
-    n_neg = len(gold) - n_pos
-    i = 0
-    while i < len(pairs):
-        j = i
-        while j + 1 < len(pairs) and pairs[j + 1][0] == pairs[i][0]:
-            j += 1
-        rank_sum += sum(pairs[k][1] for k in range(i, j + 1)) * ((i + j) / 2 + 1)
-        i = j + 1
-    if not n_pos or not n_neg:
-        return None
-    return round((rank_sum - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg), 4)
-
-
-def best_f1_metrics(gold, score):
-    return max((binary_metrics(gold, score, t / 100) for t in range(0, 101)),
-               key=lambda m: m["f1"])
-
-
-def calibrate_for_recall(val_gold, val_score, target_recall: float) -> float:
-    """Highest threshold whose validation recall still meets the target —
-    i.e. best precision compatible with ``target_recall``.  Chosen on
-    validation data only, never on test.
-
-    Recall is non-increasing as the threshold rises, so we scan thresholds
-    ascending and keep the last one that still achieves the target.
-    """
-    total_pos = max(1, sum(val_gold))
-    best = 0.0
-    for t in sorted(set(val_score)):
-        tp = sum(g and s >= t for g, s in zip(val_gold, val_score))
-        if tp / total_pos >= target_recall - 1e-9:
-            best = t
-        else:
-            break  # from here recall can only drop further
-    return best
-
-
-# ------------------------------------------------------------ model helpers
-def train_logistic(X, y, epochs, lr, l2, class_balance=False):
-    """Plain numpy logistic regression with optional inverse-frequency
-    class weighting. Returns (w, b)."""
-    import numpy as np
-
-    y = np.asarray(y, dtype=float)
-    n = len(y)
-    w_sample = np.ones(n)
-    if class_balance:
-        n_pos = max(1.0, float(y.sum()))
-        n_neg = max(1.0, n - n_pos)
-        w_sample[y == 1] = n / (2 * n_pos)
-        w_sample[y == 0] = n / (2 * n_neg)
-    w = np.zeros(X.shape[1])
-    b = 0.0
-    for epoch in range(epochs):
-        z = 1.0 / (1.0 + np.exp(-(X @ w + b)))
-        err = (z - y) * w_sample
-        grad_w = X.T @ err / n + l2 * w
-        grad_b = float(err.mean())
-        w -= lr * grad_w
-        b -= lr * grad_b
-        if epoch % 100 == 0:
-            eps = 1e-9
-            loss = -float(np.mean(w_sample * (y * np.log(z + eps) + (1 - y) * np.log(1 - z + eps))))
-            print(f"    epoch {epoch:4d}  train_loss={loss:.4f}")
-    return w, b
-
-
-def sigmoid(z):
+def sigmoid(z: float) -> float:
     return 1.0 / (1.0 + math.exp(-z))
 
 
-# --------------------------------------------------------------------- main
+def probs(X, weights: list[float], bias: float) -> list[float]:
+    return [sigmoid(sum(w * x for w, x in zip(weights, row)) + bias) for row in X]
+
+
+def banner(title: str, data: list[tuple[str, int]]) -> None:
+    pos = sum(y for _, y in data)
+    print(f"{title}: {len(data)} rows | {pos} injection / {len(data) - pos} benign "
+          f"| base rate {pos / max(1, len(data)):.4f} | exact dups {exact_duplicate_count(data)}")
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--dataset", type=Path, nargs="+", required=True,
-                   help="one or more JSONL training corpora (concatenated)")
-    p.add_argument("--eval-file", type=Path, nargs="+", default=None,
-                   help="optional JSONL used ONLY as the test set (official or "
-                        "foreign-corpus split)")
-    p.add_argument("--cal-file", type=Path, nargs="+", default=None,
-                   help="optional JSONL held out from the DEPLOYMENT "
-                        "distribution: used for stacker training and threshold "
-                        "calibration instead of a slice of the train pool")
+    p.add_argument("--dataset", type=Path, nargs="+", required=True)
+    p.add_argument("--cal-file", type=Path, nargs="+", default=None)
+    p.add_argument("--eval-file", type=Path, nargs="+", default=None)
     p.add_argument("--model", default="BAAI/bge-small-en-v1.5")
-    p.add_argument("--test-frac", type=float, default=0.2)
-    p.add_argument("--val-frac", type=float, default=0.15,
-                   help="fraction of the training pool used for stacking + "
-                        "threshold calibration (never for the base model)")
-    p.add_argument("--epochs", type=int, default=300)
-    p.add_argument("--lr", type=float, default=0.5)
-    p.add_argument("--l2", type=float, default=1e-3)
-    p.add_argument("--seed", type=int, default=0xDEF2)
-    p.add_argument("--class-balance", action="store_true",
-                   help="inverse-frequency weighting in the loss")
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--no-class-balance", action="store_true")
     p.add_argument("--target-recall", type=float, default=0.95,
-                   help="calibrate the operating threshold on VALIDATION to "
-                        "achieve this recall with best precision")
-    p.add_argument("--out-weights", type=Path, required=True,
-                   help="drop-in weights for ContentRiskAnalyzer (base model; "
-                        "stacker + calibrated threshold stored alongside)")
+                   help="deployment criterion, chosen BEFORE seeing test")
+    p.add_argument("--allow-role-overlap-debug", action="store_true")
+    p.add_argument("--bootstrap", type=int, default=1000)
+    p.add_argument("--out-weights", type=Path, required=True)
     p.add_argument("--out-metrics", type=Path, default=None)
     p.add_argument("--out-scores", type=Path, default=None)
     args = p.parse_args()
 
-    import random
+    if not args.allow_role_overlap_debug:
+        assert_disjoint_roles(dataset=args.dataset, cal=args.cal_file or [],
+                              eval=args.eval_file or [])
 
-    print("loading corpora:")
-    data = load_many(args.dataset)
-    rng = random.Random(args.seed)
-    rng.shuffle(data)
-    if args.eval_file:
-        test = load_many(args.eval_file)
-        pool = data
-        split_desc = "official/foreign eval file"
-    else:
-        n_test = max(1, int(len(data) * args.test_frac))
-        test, pool = data[:n_test], data[n_test:]
-        split_desc = f"random {args.test_frac:.0%} hold-out"
+    # ------------------------------------------------------------------ data
+    print("== TRAIN SOURCES ==")
+    train = load_many(args.dataset, role="train")
+    cal: list[tuple[str, int]]
     if args.cal_file:
-        val = load_many(args.cal_file)
-        train = pool
-        print(f"calibration from deployment-slice file(s), {len(val)} rows")
+        print("== CALIBRATION SOURCES ==")
+        cal = load_many(args.cal_file, role="cal")
     else:
-        n_val = max(1, int(len(pool) * args.val_frac))
-        val, train = pool[:n_val], pool[n_val:]
+        import random
+
+        train = list(train)
+        random.Random(args.seed).shuffle(train)
+        n_cal = max(1, int(len(train) * 0.15))
+        cal, train = train[:n_cal], train[n_cal:]
+        print(f"== CALIBRATION == pool-split slice n={n_cal} (deployment-"
+              f"matched --cal-file is preferred)")
+
+    eval_ = None
+    if args.eval_file:
+        print("== TEST SOURCES (frozen) ==")
+        eval_ = load_many(args.eval_file, role="test")
+        eval_, removed = remove_overlap(eval_, train, cal)
+        print(f"removed {removed} test rows overlapping train/cal "
+              f"(normalized-text match)")
+        if not eval_:
+            raise SystemExit(
+                "test set is EMPTY after overlap removal — the eval file "
+                "duplicates training/calibration text; benchmarking it would "
+                "invalidate every metric"
+            )
+    else:
+        import random
+
+        pool = list(train)
+        random.Random(args.seed + 1).shuffle(pool)
+        n_test = max(1, int(len(pool) * 0.2))
+        eval_, train = pool[:n_test], pool[n_test:]
+        print("== TEST == random 20% hold-out from training pool")
+
+    banner("train", train)
+    banner("calibration", cal)
+    banner("test", eval_)
     y_train = [y for _, y in train]
-    y_val = [y for _, y in val]
-    y_test = [y for _, y in test]
-    print(f"train {len(train)} ({sum(y_train)} inj) | "
-          f"val {len(val)} ({sum(y_val)} inj) | "
-          f"test {len(test)} ({sum(y_test)} inj) [{split_desc}]")
-    print(f"test base rate: {sum(y_test) / max(1, len(test)):.3f}")
+    y_cal = [y for _, y in cal]
+    y_test = [y for _, y in eval_]
 
-    # ------------------------------------------------------- embed + base
+    # ---------------------------------------------------------- embed + fit
     import numpy as np
-    from sentence_transformers import SentenceTransformer
+    from defend_hc2.embedder import get_sentence_transformer
 
-    print(f"embedding with {args.model} ...")
-    model = SentenceTransformer(args.model)
+    model = get_sentence_transformer(args.model)
     X = np.asarray(model.encode(
-        [t for t, _ in train + val + test],
-        normalize_embeddings=True, convert_to_numpy=True, batch_size=64),
-        dtype=np.float64)
-    Xtr, Xva, Xte = (X[: len(train)],
-                     X[len(train): len(train) + len(val)],
-                     X[len(train) + len(val):])
+        [t for t, _ in train + cal + eval_], normalize_embeddings=True,
+        convert_to_numpy=True, batch_size=256), dtype=float)
+    Xtr = X[: len(train)]
+    Xcal = X[len(train): len(train) + len(cal)]
+    Xte = X[len(train) + len(cal):]
 
-    print("training base logistic (embeddings)...")
-    w, b = train_logistic(Xtr, y_train, args.epochs, args.lr, args.l2,
-                          class_balance=args.class_balance)
-    base_va = 1.0 / (1.0 + np.exp(-(Xva @ w + b)))
-    base_te = 1.0 / (1.0 + np.exp(-(Xte @ w + b)))
+    print("\n== base classifier (Phase 3) ==")
+    fit = fit_classifier(Xtr, y_train, Xcal, y_cal, seed=args.seed,
+                         class_balance=not args.no_class_balance, verbose=True)
+    print(f"selected C={fit['selected_C']} "
+          f"(cal PR-AUC {fit['selected_C_cal_pr_auc']})")
 
-    # ------------------------------------------------- meta-features/stack
+    # ------------------------------------------------- stacked meta-model
     from defend_hc2.content_risk import ContentRiskAnalyzer
 
     demo = ContentRiskAnalyzer(demo_mode=True)
@@ -242,98 +151,139 @@ def main() -> int:
     def meta_row(text: str, base_p: float) -> list[float]:
         lex, _ = demo.lexical_scan(text)
         struct, _ = demo._structural_features(text)
-        obf = (1.0 if _B64ISH.search(text) else 0.0) + (1.0 if _LEET.search(text) else 0.0)
-        return [1.0, float(base_p), lex, struct, obf]
+        return [1.0, float(base_p), lex, struct]
 
-    print("training stacked meta-model (val split)...")
-    Zva = np.array([meta_row(t, p) for (t, _), p in zip(val, base_va)])
-    Zte = np.array([meta_row(t, p) for (t, _), p in zip(test, base_te)])
-    ws, bs = train_logistic(Zva, y_val, epochs=250, lr=0.5, l2=1e-3,
-                            class_balance=args.class_balance)
-    stack_va = np.array([sigmoid(float(z @ ws + bs)) for z in Zva])
-    stack_te = np.array([sigmoid(float(z @ ws + bs)) for z in Zte])
+    base_cal = probs(Xcal, fit["weights"], fit["bias"])
+    base_te = probs(Xte, fit["weights"], fit["bias"])
+    Zcal = np.array([meta_row(t, p) for (t, _), p in zip(cal, base_cal)])
+    Zte = np.array([meta_row(t, p) for (t, _), p in zip(eval_, base_te)])
+    print("\n== stacked meta-model (trained on calibration split only) ==")
+    meta = fit_classifier(Zcal, y_cal, Zcal, y_cal, seed=args.seed,
+                          class_balance=not args.no_class_balance)
+    stack_cal = probs(Zcal, meta["weights"], meta["bias"])
+    stack_te = probs(Zte, meta["weights"], meta["bias"])
 
-    # --------------------------------------- calibration + final metrics
-    thr = calibrate_for_recall(y_val, stack_va.tolist(), args.target_recall)
-    print(f"calibrated threshold on validation "
-          f"(target recall {args.target_recall}): t={thr:.4f}")
+    # ------------------------------------------------- calibration (cal only)
+    print("\n== threshold calibration (CALIBRATION DATA ONLY) ==")
+    thr_base = calibrate_thresholds(y_cal, base_cal)
+    thr_stack = calibrate_thresholds(y_cal, stack_cal)
+    key = f"recall@{args.target_recall}"
+    print(f"base:  {thr_base}")
+    print(f"stack: {thr_stack}")
+    print(f"deployment criterion (declared a priori): {key}")
 
-    lex_scores = [demo.lexical_scan(t)[0] for t, _ in test]
-    demo_scores = [demo.injection_score_for(t)[0] for t, _ in test]
+    # lexical / demo baselines calibrated WITH THE SAME criterion on cal
+    lex_cal, lex_te = ([demo.lexical_scan(t)[0] for t, _ in part] for part in (cal, eval_))
+    fus_cal, fus_te = ([demo.injection_score_for(t)[0] for t, _ in part] for part in (cal, eval_))
+    thr_lex = calibrate_thresholds(y_cal, lex_cal)[key]
+    thr_fus = calibrate_thresholds(y_cal, fus_cal)[key]
 
-    base_va_list = base_va.tolist()
-    results = {
-        "datasets": [str(d) for d in args.dataset],
-        "n_train": len(train), "n_val": len(val), "n_test": len(test),
-        "split": split_desc,
-        "eval_files": [str(d) for d in args.eval_file] if args.eval_file else None,
-        "calibration_source": ([str(d) for d in args.cal_file]
-                               if args.cal_file else "train pool slice"),
-        "class_balance": bool(args.class_balance),
-        "positive_rate_test": round(sum(y_test) / max(1, len(test)), 4),
-        "model": args.model, "seed": args.seed,
-        "embedding_logistic_t0.5": {
-            **binary_metrics(y_test, base_te.tolist(), 0.5),
-            "auc": auc_rank(y_test, base_te.tolist()),
+    # ============================================================ metrics
+    results: dict = {
+        "sources": {
+            "train": [str(d) for d in args.dataset],
+            "calibration": [str(d) for d in args.cal_file] or ["pool-split 15%"],
+            "test": [str(d) for d in args.eval_file] or ["pool-split 20%"],
         },
-        "embedding_logistic_best_f1": {
-            **best_f1_metrics(y_test, base_te.tolist()),
-            "auc": auc_rank(y_test, base_te.tolist()),
+        "counts": {"train": len(train), "cal": len(cal), "test": len(eval_)},
+        "base_rates": {
+            "train": round(sum(y_train) / max(1, len(y_train)), 4),
+            "cal": round(sum(y_cal) / max(1, len(y_cal)), 4),
+            "test": round(sum(y_test) / max(1, len(y_test)), 4),
         },
-        "stacked_meta_t0.5": {
-            **binary_metrics(y_test, stack_te.tolist(), 0.5),
-            "auc": auc_rank(y_test, stack_te.tolist()),
-        },
-        "stacked_meta_calibrated": {
-            **binary_metrics(y_test, stack_te.tolist(), thr),
-            "auc": auc_rank(y_test, stack_te.tolist()),
-            "calibration": f"t chosen on val for recall>={args.target_recall}",
-        },
-        "demo_heuristic_fusion": {
-            **best_f1_metrics(y_test, demo_scores), "auc": auc_rank(y_test, demo_scores),
-        },
-        "lexical_only": {
-            **best_f1_metrics(y_test, lex_scores), "auc": auc_rank(y_test, lex_scores),
-        },
+        "seed": args.seed, "model": args.model,
+        "threshold_origin": "calibration data only",
+        "deployment_criterion": key,
+        "selection": {k: fit[k] for k in ("selected_C", "selection_metric",
+                                          "selected_C_cal_pr_auc", "C_sweep",
+                                          "fold_scaler_max_abs_dev")},
+        "environment": environment_block(),
+        "git_commit": git_commit(Path(__file__).resolve().parents[1]),
+        "timestamp_ns": time.time_ns(),
     }
+
+    def headline(name, cal_scores, te_scores, thr_map):
+        t = thr_map[key]
+        rep = full_metric_report(y_test, te_scores, t)
+        rep["calibrated_thresholds"] = thr_map
+        rep["ci95"] = bootstrap_cis(y_test, te_scores, t, resamples=args.bootstrap, seed=args.seed)
+        oracle_t = max(
+            (full_metric_report(y_test, te_scores, c / 100) for c in range(0, 101)),
+            key=lambda m: m["f1"],
+        )
+        results[name] = rep
+        results[f"{name}__{ORACLE}"] = oracle_t
+
+    headline("embedding_logistic_calibrated", base_cal, base_te, thr_base)
+    headline("stacked_meta_calibrated", stack_cal, stack_te, thr_stack)
+
+    results["baseline_lexical_calibrated"] = full_metric_report(y_test, lex_te, thr_lex)
+    results["baseline_demo_fusion_calibrated"] = full_metric_report(y_test, fus_te, thr_fus)
+    for name, thr, cal_s, te_s in (("lexical", thr_lex, lex_cal, lex_te),
+                                   ("demo_fusion", thr_fus, fus_cal, fus_te)):
+        oracle_t = max(
+            (full_metric_report(y_test, te_s, c / 100) for c in range(0, 101)),
+            key=lambda m: m["f1"])
+        results[f"baseline_{name}__{ORACLE}"] = oracle_t
+
+    results["dummy_always_positive__excluded_from_comparison"] = full_metric_report(
+        y_test, [1.0] * len(y_test), 0.5)
+    results["dummy_always_negative__excluded_from_comparison"] = full_metric_report(
+        y_test, [0.0] * len(y_test), 0.5)
+
+    # ------------------------------------------------------------ outputs
+    print("\n== held-out test metrics (calibration-derived thresholds) ==")
+    for name, m in results.items():
+        if isinstance(m, dict) and "f1" in m:
+            tag = "  [TEST-ORACLE]" if ORACLE in name else \
+                  "  [DUMMY]" if "dummy" in name else ""
+            print(f"  {name:<58} bal={m['balanced_accuracy']:.4f} "
+                  f"P={m['precision']:.4f} R={m['recall']:.4f} F1={m['f1']:.4f} "
+                  f"AUC={m['roc_auc']}{tag}")
 
     if args.out_scores:
         args.out_scores.parent.mkdir(parents=True, exist_ok=True)
+        t_deploy = thr_stack[key]
         with args.out_scores.open("w", encoding="utf-8") as fh:
-            for (text, g), p_base, p_stack in zip(test, base_te.tolist(), stack_te.tolist()):
-                fh.write(json.dumps({"text": text, "label": g,
-                                     "ml_score": round(float(p_base), 6),
-                                     "stacked_score": round(float(p_stack), 6)}) + "\n")
+            for i, ((text, g), p_base, p_stack) in enumerate(zip(eval_, base_te, stack_te)):
+                pred = int(p_stack >= t_deploy)
+                fh.write(json.dumps({
+                    "example_id": f"test-{i:06d}", "dataset": "test",
+                    "gold": g, "text": text,
+                    "ml_score": round(float(p_base), 6),
+                    "stacked_score": round(float(p_stack), 6),
+                    "predicted": pred, "threshold": t_deploy,
+                    "error": ("TP" if g and pred else "TN" if not g and not pred
+                              else "FN" if g else "FP"),
+                }) + "\n")
+        print(f"scores: {args.out_scores}")
 
-    print("\nheld-out test metrics:")
-    for name, m in results.items():
-        if isinstance(m, dict) and "f1" in m:
-            print(f"  {name:<34} acc={m['accuracy']:.4f} bal={m['balanced_accuracy']:.4f} "
-                  f"prec={m['precision']:.4f} rec={m['recall']:.4f} f1={m['f1']:.4f} "
-                  f"auc={m['auc']} (t={m['threshold']})")
-
-    # -------- weights: v1 drop-in (base logistic) + stacker + calibration
     args.out_weights.parent.mkdir(parents=True, exist_ok=True)
     args.out_weights.write_text(json.dumps({
-        "format": "defend-hc2-weights/1", "model": args.model, "type": "logistic",
-        "weights": [float(x) for x in w], "bias": float(b), "threshold": 0.5,
+        "format": "defend-hc2-weights/1", "model": args.model, "type": "logistic+standard_scaler(sklearn)",
+        "weights": fit["weights"], "bias": fit["bias"], "dims": fit["dims"],
+        "threshold": thr_base[key],
+        "calibrations": thr_base,
+        "deployment_criterion": key,
+        "selection": {k: fit[k] for k in ("selected_C", "selection_metric",
+                                          "selected_C_cal_pr_auc", "seed", "estimator")},
         "trained_at_ns": time.time_ns(),
-        "trained_on": {"datasets": [str(d) for d in args.dataset],
-                       "n_train": len(train), "seed": args.seed,
-                       "class_balance": bool(args.class_balance)},
-        "metrics": results["embedding_logistic_t0.5"],
+        "trained_on": results["sources"] | {"counts": results["counts"]},
+        "metrics_test": {"embedding_logistic_calibrated": results["embedding_logistic_calibrated"]},
         "stacked_meta": {
-            "features": ["bias", "base_p", "lexical", "structural", "obfuscation"],
-            "weights": [float(x) for x in ws], "bias": float(bs),
-            "calibrated_threshold": float(thr),
-            "target_recall": args.target_recall,
+            "features": ["bias", "base_p", "lexical", "structural"],
+            "weights": meta["weights"], "bias": meta["bias"],
+            "calibrations": thr_stack,
         },
+        # NO test-oracle thresholds here — production weights must never
+        # contain test-derived operating points.
     }))
-    print(f"\nweights: {args.out_weights}")
+    print(f"weights: {args.out_weights}")
     if args.out_metrics:
         args.out_metrics.parent.mkdir(parents=True, exist_ok=True)
         args.out_metrics.write_text(json.dumps(results, indent=2))
         print(f"metrics: {args.out_metrics}")
+        print(f"run manifest sha256(metrics json): {file_sha256(args.out_metrics)[:16]}…")
     return 0
 
 
