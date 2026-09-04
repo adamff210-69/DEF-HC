@@ -11,7 +11,10 @@ Upgrades over the plain logistic benchmark:
   (the base embedder sees only the train split — honest stacking);
 * **validation-calibrated threshold** — the operating point is chosen on the
   *validation* split to hit a target recall (e.g. catch 95% of attacks) with
-  the best precision available — never tuned on the test set.
+  the best precision available — never tuned on the test set.  Pass
+  ``--cal-file`` to calibrate/stack on a held-out slice of the *deployment*
+  distribution (the distribution must match where the threshold will be
+  used; thresholds do not transfer across corpora).
 
 Every reported metric is computed on an untouched test split
 (``--eval-file`` for an official/foreign corpus, else a random hold-out).
@@ -157,6 +160,10 @@ def main() -> int:
     p.add_argument("--eval-file", type=Path, nargs="+", default=None,
                    help="optional JSONL used ONLY as the test set (official or "
                         "foreign-corpus split)")
+    p.add_argument("--cal-file", type=Path, nargs="+", default=None,
+                   help="optional JSONL held out from the DEPLOYMENT "
+                        "distribution: used for stacker training and threshold "
+                        "calibration instead of a slice of the train pool")
     p.add_argument("--model", default="BAAI/bge-small-en-v1.5")
     p.add_argument("--test-frac", type=float, default=0.2)
     p.add_argument("--val-frac", type=float, default=0.15,
@@ -192,8 +199,13 @@ def main() -> int:
         n_test = max(1, int(len(data) * args.test_frac))
         test, pool = data[:n_test], data[n_test:]
         split_desc = f"random {args.test_frac:.0%} hold-out"
-    n_val = max(1, int(len(pool) * args.val_frac))
-    val, train = pool[:n_val], pool[n_val:]
+    if args.cal_file:
+        val = load_many(args.cal_file)
+        train = pool
+        print(f"calibration from deployment-slice file(s), {len(val)} rows")
+    else:
+        n_val = max(1, int(len(pool) * args.val_frac))
+        val, train = pool[:n_val], pool[n_val:]
     y_train = [y for _, y in train]
     y_val = [y for _, y in val]
     y_test = [y for _, y in test]
@@ -255,6 +267,8 @@ def main() -> int:
         "n_train": len(train), "n_val": len(val), "n_test": len(test),
         "split": split_desc,
         "eval_files": [str(d) for d in args.eval_file] if args.eval_file else None,
+        "calibration_source": ([str(d) for d in args.cal_file]
+                               if args.cal_file else "train pool slice"),
         "class_balance": bool(args.class_balance),
         "positive_rate_test": round(sum(y_test) / max(1, len(test)), 4),
         "model": args.model, "seed": args.seed,
