@@ -1,7 +1,15 @@
 # Running DEFEND-HC2 on Kaggle (ML mode)
 
-The ready-to-use notebook lives at
-[`notebooks/defend-hc2-kaggle-ml-mode.ipynb`](../notebooks/defend-hc2-kaggle-ml-mode.ipynb).
+Two options:
+
+1. **Single cell (fastest)** — paste
+   [`notebooks/kaggle-all-in-one-cell.py`](../notebooks/kaggle-all-in-one-cell.py)
+   into one code cell. It does everything idempotently: deps → clone branch →
+   editable install (+ running-kernel import fix) → train bge weights (skips if
+   present) → ML probes → full scenario matrix → checkpoint/export → in-process API.
+2. **Guided notebook** — import
+   [`notebooks/defend-hc2-kaggle-ml-mode.ipynb`](../notebooks/defend-hc2-kaggle-ml-mode.ipynb)
+   (steps below).
 
 ## Import it
 
