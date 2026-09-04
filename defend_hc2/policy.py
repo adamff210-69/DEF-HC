@@ -11,13 +11,16 @@ content scores):
 * tool provenance invalid
 * cross-session splice detected
 
-Otherwise the fused content risk (spec formula)::
+Otherwise the fused content risk uses the predefined-baseline signal
+fusion::
 
-    content_risk = 0.40 * injection_score
-                 + 0.20 * lexical_score
-                 + 0.20 * retrieval_injection_score
-                 + 0.10 * intent_context_mismatch_score
-                 + 0.10 * conversation_drift_score
+    s_i  = clamp(weight_i * value_i, 0, 0.999)          (active channels only)
+    risk = strongest + 0.5 * (noisy_or - strongest)     (clamped to [0, 1])
+
+Inactive channels are ``None`` — never a zero score diluting evidence.
+Deterministic **security floors** (see ``_security_floor_action``) then
+guarantee a minimum action for corroborated exfiltration attacks regardless
+of band thresholds.
 
 Decision bands::
 
@@ -35,12 +38,10 @@ from defend_hc2.constants import (
     THRESHOLD_QUARANTINE,
     THRESHOLD_REJECT,
     THRESHOLD_SANITIZE,
-    W_CONVERSATION_DRIFT,
-    W_INJECTION,
-    W_INTENT_MISMATCH,
-    W_LEXICAL,
-    W_RETRIEVAL_INJECTION,
 )
+from defend_hc2.content_risk import combine_signals
+_ACTION_RANK = {"ALLOW": 0, "SANITIZE_AND_ALLOW": 1, "QUARANTINE": 2, "REJECT": 3}
+
 from defend_hc2.results import (
     ContentRiskResult,
     DocumentProvenanceResult,
@@ -96,20 +97,46 @@ class PolicyEngine:
     # ------------------------------------------------------------ risk math
     @staticmethod
     def fused_content_risk(
-        injection_score: float,
-        lexical_score: float,
-        retrieval_injection_score: float,
-        intent_context_mismatch_score: float,
-        conversation_drift_score: float,
+        injection_score: float | None,
+        lexical_score: float | None,
+        retrieval_injection_score: float | None,
+        intent_context_mismatch_score: float | None,
+        conversation_drift_score: float | None,
     ) -> float:
-        risk = (
-            W_INJECTION * injection_score
-            + W_LEXICAL * lexical_score
-            + W_RETRIEVAL_INJECTION * retrieval_injection_score
-            + W_INTENT_MISMATCH * intent_context_mismatch_score
-            + W_CONVERSATION_DRIFT * conversation_drift_score
-        )
-        return round(_clamp01(risk), 6)
+        """Predefined-baseline fusion over active channels only (spec
+        Phase 6): ``None`` = channel not applicable, never a zero that
+        dilutes evidence."""
+        return combine_signals({
+            "injection": injection_score,
+            "lexical": lexical_score,
+            "retrieval": retrieval_injection_score,
+            "mismatch": intent_context_mismatch_score,
+            "drift": conversation_drift_score,
+        })
+
+    # --------------------------------------- security floors (spec Phase 9)
+    #: Deterministic invariants — documented separately from learned policy
+    #: thresholds and never tuned on evaluation data.  A corroborated direct
+    #: prompt-exfiltration attempt must never fall below QUARANTINE merely
+    #: because some fusion channel was inactive.
+    _FLOOR_MIN_INJECTION = 0.60
+    _FLOOR_MIN_ACTION = "QUARANTINE"
+
+    @staticmethod
+    def _security_floor_action(content: ContentRiskResult) -> str | None:
+        if content.injection_score < PolicyEngine._FLOOR_MIN_INJECTION:
+            return None
+        evidence = "\n".join(content.evidence).casefold()
+        if "instruction override" not in evidence:
+            return None
+        if ("system-prompt probing" in evidence
+                or "secret/prompt exfiltration" in evidence):
+            return PolicyEngine._FLOOR_MIN_ACTION
+        return None
+
+    @staticmethod
+    def _rank(action: str) -> int:
+        return _ACTION_RANK[action]
 
     # -------------------------------------------------------------- decide
     def decide(
@@ -120,7 +147,7 @@ class PolicyEngine:
         tools: Sequence[ToolProvenanceResult] = (),
         schema_valid: bool = True,
         schema_errors: Sequence[str] = (),
-        conversation_drift_score: float = 0.0,
+        conversation_drift_score: float | None = None,
     ) -> PolicyDecision:
         """Fuse all layer outputs into a single decision."""
         reasons: list[str] = []
@@ -192,6 +219,16 @@ class PolicyEngine:
         else:
             action = "ALLOW"
 
+        # ---- deterministic security floors (spec Phase 9) ------------------
+        floor = self._security_floor_action(content)
+        if floor and self._rank(action) < self._rank(floor):
+            reasons.append(
+                f"SECURITY_FLOOR[direct-exfiltration]: injection_score="
+                f"{content.injection_score:.3f} with corroborated override + "
+                f"exfiltration evidence -> min action {floor}"
+            )
+            action = floor  # type: ignore[assignment]
+
         reasons.append(f"fused_content_risk={risk} band={action}")
         return PolicyDecision(
             action=action,  # type: ignore[arg-type]
@@ -202,18 +239,24 @@ class PolicyEngine:
         )
 
     @staticmethod
-    def _components(content: ContentRiskResult, drift: float) -> dict[str, float]:
-        return {
+    def _components(content: ContentRiskResult, drift: float | None) -> dict[str, float]:
+        raw = {
             "injection_score": content.injection_score,
             "lexical_score": content.lexical_score,
             "retrieval_injection_score": content.retrieval_injection_score,
             "intent_context_mismatch_score": content.intent_context_mismatch_score,
-            "conversation_drift_score": round(_clamp01(drift), 6),
-            "fused_content_risk": PolicyEngine.fused_content_risk(
-                content.injection_score,
-                content.lexical_score,
-                content.retrieval_injection_score,
-                content.intent_context_mismatch_score,
-                drift,
-            ),
+            "conversation_drift_score": drift,
         }
+        active = {
+            name: round(_clamp01(value), 6)
+            for name, value in raw.items()
+            if value is not None  # inactive channels omitted, not zeroed
+        }
+        active["fused_content_risk"] = PolicyEngine.fused_content_risk(
+            content.injection_score,
+            content.lexical_score,
+            content.retrieval_injection_score,
+            content.intent_context_mismatch_score,
+            drift,
+        )
+        return active

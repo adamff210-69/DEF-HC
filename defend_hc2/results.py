@@ -14,12 +14,17 @@ ToolVerdict = Literal["verified", "unverified", "rejected"]
 
 @dataclass(slots=True)
 class ContentRiskResult:
-    """L1 output (spec exactly)."""
+    """L1 output.
+
+    ``retrieval_injection_score`` / ``intent_context_mismatch_score`` are
+    ``None`` when the channel was not applicable (no retrieved documents) —
+    absent context must never dilute active evidence (spec defect P2).
+    """
 
     lexical_score: float
     injection_score: float
-    retrieval_injection_score: float
-    intent_context_mismatch_score: float
+    retrieval_injection_score: float | None
+    intent_context_mismatch_score: float | None
     content_risk: float
     evidence: list[str] = field(default_factory=list)
 

@@ -27,19 +27,55 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from defend_hc2 import normalize as _norm
 from defend_hc2.canonicalization import Canonicalizer
 from defend_hc2.constants import (
     DEFAULT_EMBEDDING_MODEL,
-    W_INTENT_MISMATCH,
-    W_LEXICAL,
-    W_RETRIEVAL_INJECTION,
-    W_INJECTION,
+    FUSION_WEIGHTS,
 )
 from defend_hc2.exceptions import (
     EmbeddingBackendUnavailableError,
     SchemaValidationError,
 )
 from defend_hc2.results import ContentRiskResult
+
+
+def dedup_evidence(evidence: Sequence[str]) -> list[str]:
+    """Deterministic dedup (first-seen order, casefold keys — spec P6).
+
+    ``casefold`` rather than ``hash()`` so identity never depends on hash
+    randomization.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in evidence:
+        key = item.casefold()
+        if key not in seen:
+            seen.add(key)
+            out.append(item)
+    return out
+
+
+def combine_signals(channels: dict[str, float | None]) -> float:
+    """Predefined-baseline fusion (spec Phase 6).
+
+    ``None`` channels are inactive — absent context does not dilute active
+    evidence.  For active channels ``s_i = clamp(w_i * v_i, 0, 0.999)`` and
+    ``risk = strongest + 0.5 * (noisy_or - strongest)``, clamped to [0, 1].
+    """
+    active = [
+        min(max(FUSION_WEIGHTS[name] * value, 0.0), 0.999)
+        for name, value in channels.items()
+        if value is not None
+    ]
+    if not active:
+        return 0.0
+    strongest = max(active)
+    prod = 1.0
+    for s_i in active:
+        prod *= 1.0 - s_i
+    noisy_or = 1.0 - prod
+    return round(_clamp01(strongest + 0.5 * (noisy_or - strongest)), 6)
 
 # ==========================================================================
 # Lexical pattern bank.  (pattern, weight, human-readable evidence label)
@@ -220,18 +256,30 @@ class ContentRiskAnalyzer:
     # ------------------------------------------------------------- lexical
     @staticmethod
     def lexical_scan(text: str) -> tuple[float, list[str]]:
-        """Weighted keyword/regex scan; returns (score, evidence)."""
-        score = 0.0
-        evidence: list[str] = []
-        seen: set[str] = set()
-        for pattern, weight, label in _LEXICAL_COMPILED:
-            for match in pattern.finditer(text):
-                score += weight
-                key = f"{label}: {match.group(0)[:60]!r}"
-                if key not in seen:
-                    seen.add(key)
-                    evidence.append(key)
-        return _clamp01(score), evidence
+        """Weighted keyword/regex scan over conservative variants.
+
+        ``lexical_score = max(score(variant))`` across ``raw / normalized /
+        folded / b64_i`` views (spec Phase 2).  Evidence from a non-raw
+        variant is tagged, e.g. ``instruction override [folded]: ...``.
+        """
+        best = -1.0
+        best_ev: list[str] = []
+        for tag, variant in _norm.variants(text).items():
+            score = 0.0
+            evidence: list[str] = []
+            seen: set[str] = set()
+            for pattern, weight, label in _LEXICAL_COMPILED:
+                for match in pattern.finditer(variant):
+                    score += weight
+                    body = f"{match.group(0)[:60]!r}"
+                    key = f"{label}: {body}"
+                    if key not in seen:
+                        seen.add(key)
+                        evidence.append(key if tag == "raw"
+                                       else f"{label} [{tag}]: {body}")
+            if score > best:  # strict: ties keep the earliest (raw-most) view
+                best, best_ev = score, evidence
+        return _clamp01(max(best, 0.0)), best_ev
 
     # ---------------------------------------------- structural heuristics
     def _structural_features(self, text: str) -> tuple[float, list[str]]:
@@ -307,12 +355,26 @@ class ContentRiskAnalyzer:
         evidence = lex_ev + struct_ev
 
         if not self.demo_mode and self._model is not None and self._clf_weights:
-            vec = self._embed([text])[0]
-            z = sum(w * x for w, x in zip(self._clf_weights, vec)) + self._clf_bias
-            ml = 1.0 / (1.0 + math.exp(-z))
+            # ML analysis evaluates the raw and the most-processed variant
+            # (folded when present, else normalized); combined via max —
+            # a single view scoring an attack raises the attack.
+            views = [text]
+            vs = _norm.variants(text)
+            for tag in ("folded", "normalized"):
+                if tag in vs and vs[tag] not in views:
+                    views.append(vs[tag])
+                    break
+            probs = []
+            for vec in self._embed(views):
+                z = sum(w * x for w, x in zip(self._clf_weights, vec)) + self._clf_bias
+                probs.append(1.0 / (1.0 + math.exp(-z)))
+            ml = max(probs)
             # The heuristic surface still contributes — fusion, not override.
             score = _clamp01(0.75 * ml + 0.25 * max(lex, struct))
-            evidence.append(f"embedding classifier p(injection)={ml:.3f}")
+            evidence.append(
+                f"embedding classifier p(injection)={ml:.3f} "
+                f"over {len(views)} view(s)"
+            )
             return score, evidence
 
         # demo_mode: monotone, deterministic fusion.  lex saturates fast;
@@ -321,11 +383,14 @@ class ContentRiskAnalyzer:
         return _clamp01(fused), evidence
 
     # ----------------------------------------------- intent/context match
-    def mismatch_score(self, user_request: str, contexts: Iterable[str]) -> tuple[float, list[str]]:
-        """Intent/context mismatch between the request and retrieved context."""
+    def mismatch_score(
+        self, user_request: str, contexts: Iterable[str]
+    ) -> tuple[float | None, list[str]]:
+        """Intent/context mismatch; ``(None, [])`` when no context exists —
+        an absent channel must not dilute fusion (spec defect P2)."""
         contexts = [c for c in contexts if c and c.strip()]
         if not contexts:
-            return 0.0, []
+            return None, []
         evidence: list[str] = []
 
         if not self.demo_mode and self._model is not None:
@@ -370,28 +435,35 @@ class ContentRiskAnalyzer:
     # ------------------------------------------------------ conversation
     def conversation_drift_score(
         self, history: Sequence[str], current: str
-    ) -> tuple[float, list[str]]:
-        """Topic drift of ``current`` relative to earlier user messages."""
+    ) -> tuple[float | None, list[str]]:
+        """Topic drift of ``current`` relative to earlier user messages.
+
+        ``(None, [])`` — channel **inactive** — when history is insufficient
+        (fewer than 3 prior turns, spec defect P7); weak context must not
+        fabricate risk.  Constants are predefined, not tuned on benchmarks.
+        """
         history = [h for h in history if h and h.strip()]
-        if not history or not current.strip():
-            return 0.0, []
+        if len(history) < 3 or not current.strip():
+            return None, []
 
         if not self.demo_mode and self._model is not None:
             vecs = self._embed([current, *history])
             cur, past = vecs[0], vecs[1:]
             mean_past = [sum(col) / len(col) for col in zip(*past)]
             sim = self._cosine(cur, mean_past)
-            return _clamp01(1.0 - sim), [f"drift cosine-to-history={sim:.3f}"]
+        else:
+            cur_tokens = _token_set(current)
+            if not cur_tokens:
+                return None, []
+            sims = []
+            for h in history:
+                h_tokens = _token_set(h)
+                sims.append(len(cur_tokens & h_tokens) / max(1, len(cur_tokens | h_tokens)))
+            sim = sum(sims) / len(sims)
 
-        cur_tokens = _token_set(current)
-        if not cur_tokens:
-            return 0.0, []
-        sims = []
-        for h in history:
-            h_tokens = _token_set(h)
-            sims.append(len(cur_tokens & h_tokens) / max(1, len(cur_tokens | h_tokens)))
-        mean_sim = sum(sims) / len(sims)
-        return _clamp01(1.0 - mean_sim), [f"drift token-overlap={mean_sim:.3f}"]
+        gated = max(0.0, (0.55 - sim) / 0.55) * min(1.0, len(history) / 6)
+        return (round(_clamp01(gated), 6),
+                [f"drift similarity-to-history={sim:.3f} over {len(history)} turn(s)"])
 
     # --------------------------------------------------------------- fuse
     def analyze_user_message(self, text: str) -> tuple[float, float, list[str]]:
@@ -399,33 +471,39 @@ class ContentRiskAnalyzer:
         text = Canonicalizer.normalize_text(text)
         if not isinstance(text, str) or not text.strip():
             raise SchemaValidationError("user message must be non-empty text")
-        lex, lex_ev = self.lexical_scan(text)
+        lex, _lex_ev = self.lexical_scan(text)
         inj, inj_ev = self.injection_score_for(text)
-        return lex, inj, lex_ev + inj_ev
+        # inj_ev already contains the lexical + structural evidence; the old
+        # lex_ev + inj_ev concatenation duplicated every entry (spec P6).
+        return lex, inj, dedup_evidence(inj_ev)
 
     def fuse(
         self,
         lexical_score: float,
         injection_score: float,
-        retrieval_injection_score: float,
-        intent_context_mismatch_score: float,
+        retrieval_injection_score: float | None,
+        intent_context_mismatch_score: float | None,
         evidence: Sequence[str],
     ) -> ContentRiskResult:
-        """Weighted L1 fusion (content part of the spec's fusion formula;
-        conversation drift is folded in at L4 where history is available)."""
-        content_risk = (
-            W_INJECTION * injection_score
-            + W_LEXICAL * lexical_score
-            + W_RETRIEVAL_INJECTION * retrieval_injection_score
-            + W_INTENT_MISMATCH * intent_context_mismatch_score
-        )
+        """L1 fusion over *active* channels only (spec Phase 6; ``None`` =
+        channel not applicable).  Drift folds in later at L4."""
+        content_risk = combine_signals({
+            "injection": injection_score,
+            "lexical": lexical_score,
+            "retrieval": retrieval_injection_score,
+            "mismatch": intent_context_mismatch_score,
+        })
+
+        def _r(x: float | None) -> float | None:
+            return None if x is None else round(_clamp01(x), 6)
+
         return ContentRiskResult(
             lexical_score=round(_clamp01(lexical_score), 6),
             injection_score=round(_clamp01(injection_score), 6),
-            retrieval_injection_score=round(_clamp01(retrieval_injection_score), 6),
-            intent_context_mismatch_score=round(_clamp01(intent_context_mismatch_score), 6),
-            content_risk=round(_clamp01(content_risk), 6),
-            evidence=list(evidence),
+            retrieval_injection_score=_r(retrieval_injection_score),
+            intent_context_mismatch_score=_r(intent_context_mismatch_score),
+            content_risk=content_risk,
+            evidence=dedup_evidence(evidence),
         )
 
     # -------------------------------------------------------- top-level api
@@ -444,7 +522,8 @@ class ContentRiskAnalyzer:
             risk, doc_ev = self.analyze_document(doc)
             doc_risks.append(risk)
             evidence.extend(f"doc[{i}] {e}" for e in doc_ev)
-        retrieval_injection = max(doc_risks, default=0.0)
+        # no documents -> channel inactive (None), not a zero score
+        retrieval_injection = max(doc_risks) if doc_risks else None
 
         mismatch, mm_ev = self.mismatch_score(user_text, docs)
         evidence.extend(mm_ev)

@@ -30,8 +30,22 @@ TAG_CHECKPOINT_SIG = b"DEFEND-HC2-CHECKPOINT-SIG"
 TAG_SESSION_KEY = b"DEFEND-HC2-SESSION-KEY"
 
 # --------------------------------------------------------------------------
-# Policy fusion weights / thresholds (spec, Layer 4)
+# Signal fusion (spec Layer 4) — PREDEFINED BASELINE weights, *not* tuned on
+# any evaluation data.  Inactive channels are ``None`` upstream and simply
+# absent here: fusion = strongest + 0.5 * (noisy_or - strongest) over active
+# channels only, so a strong direct attack is never diluted by missing
+# context (defect P2).
 # --------------------------------------------------------------------------
+FUSION_WEIGHTS = {
+    "injection": 1.0,
+    "lexical": 0.9,
+    "retrieval": 1.0,
+    "mismatch": 0.6,
+    "drift": 0.3,
+}
+
+# Legacy weights kept for provenance only (benchmark metrics recorded them);
+# no code path uses them anymore.
 W_INJECTION = 0.40
 W_LEXICAL = 0.20
 W_RETRIEVAL_INJECTION = 0.20

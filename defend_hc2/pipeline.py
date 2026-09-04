@@ -31,7 +31,7 @@ from defend_hc2.constants import (
     EVENT_USER_MESSAGE,
     TAG_CHECKPOINT_SIG,
 )
-from defend_hc2.content_risk import ContentRiskAnalyzer
+from defend_hc2.content_risk import ContentRiskAnalyzer, dedup_evidence
 from defend_hc2.exceptions import (
     DEFENDHC2Error,
     SchemaValidationError,
@@ -350,8 +350,10 @@ class DEFEND_HC2:
             drift, drift_ev = self.analyzer.conversation_drift_score(
                 list(history or []), normalized_text
             )
-            if drift_ev:
-                content.evidence.extend(f"drift: {e}" for e in drift_ev)
+            if drift_ev:  # only when the drift channel is active
+                content.evidence = dedup_evidence(
+                    [*content.evidence, *(f"drift: {e}" for e in drift_ev)]
+                )
 
             if user_record is not None:
                 _r, _rec = self._append_and_persist(

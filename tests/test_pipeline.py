@@ -61,11 +61,13 @@ class TestContentAttacks:
         assert r.decision.action in {"QUARANTINE", "REJECT"}
         assert r.decision.content_risk >= 0.65
 
-    def test_injection_without_history_sanitized(self, engine, session):
+    def test_injection_without_history_not_diluted(self, engine, session):
+        # spec defect P2 / Phase 6: a strong direct attack must NOT become
+        # weak because retrieval/history channels are absent.  With the
+        # predefined-baseline fusion this saturated case reaches REJECT.
         r = engine.process_user_message(session, INJECTION)
-        assert r.decision.action in {"SANITIZE_AND_ALLOW", "QUARANTINE"}
-        if r.decision.action == "SANITIZE_AND_ALLOW":
-            assert r.safe_prompt is not None
+        assert r.decision.action in {"QUARANTINE", "REJECT"}
+        assert r.decision.action != "ALLOW"
 
     def test_indirect_injection_rejected(self, engine, session):
         r = engine.process_user_message(

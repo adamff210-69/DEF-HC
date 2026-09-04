@@ -34,15 +34,28 @@ _PASS = IntegrityResult("PASS", "PASS", "NONE", "h" * 64, "n" * 64, 1)
 
 
 class TestFusionFormula:
-    def test_weights_exact(self):
+    def test_saturated_signals_not_diluted(self):
+        # spec defect P2: five saturated channels -> risk approaches 1
         risk = engine.fused_content_risk(1.0, 1.0, 1.0, 1.0, 1.0)
-        assert risk == 1.0
+        assert risk == pytest.approx(0.999, abs=1e-3)
 
     def test_component_combination(self):
-        risk = engine.fused_content_risk(0.5, 0.25, 1.0, 0.0, 1.0)
-        assert risk == pytest.approx(
-            0.40 * 0.5 + 0.20 * 0.25 + 0.20 * 1.0 + 0.10 * 0.0 + 0.10 * 1.0
-        )
+        # spec Phase 6 baseline math, worked example:
+        # channels: injection 0.5 (w 1.0), lexical 0.25 (w 0.9),
+        # retrieval 1.0 (w 1.0), mismatch 0.0 (w 0.6), drift None (inactive)
+        # s = [0.5, 0.225, 0.999, 0.0]; strongest 0.999
+        # noisy_or = 1 - (0.5 * 0.775 * 0.001 * 1.0) = 0.9996125
+        # risk = 0.999 + 0.5*(noisy_or - 0.999)
+        risk = engine.fused_content_risk(0.5, 0.25, 1.0, 0.0, None)
+        expected = 0.999 + 0.5 * ((1 - 0.5 * 0.775 * 0.001) - 0.999)
+        assert risk == pytest.approx(expected, abs=1e-4)
+
+    def test_single_active_channel_is_undiluted(self):
+        # a maxed direct attack alone must not collapse: inj=0.958, lex=1.0,
+        # no retrieval/mismatch/drift -> risk must exceed the reject band,
+        # not dilute to ~0.6 as the old weighted sum did
+        risk = engine.fused_content_risk(0.958, 1.0, None, None, None)
+        assert risk >= 0.95
 
 
 class TestThresholds:
@@ -60,11 +73,12 @@ class TestThresholds:
         ],
     )
     def test_bands(self, risk, expected):
-        # all five components at `risk` → fused risk == risk (weights sum to 1)
-        content = _content(inj=risk, lex=risk, rag=risk, mm=risk)
-        decision = engine.decide(content, [_PASS], conversation_drift_score=risk)
+        # drive the bands with a single injection channel; every other
+        # channel inactive (None) so fused risk == clamp(risk, 0.999)
+        content = _content(inj=risk, lex=0.0, rag=None, mm=None)
+        decision = engine.decide(content, [_PASS], conversation_drift_score=None)
         assert decision.action == expected
-        assert decision.content_risk == pytest.approx(min(1.0, risk), abs=1e-6)
+        assert decision.content_risk == pytest.approx(min(0.999, risk), abs=1e-3)
 
 
 class TestHardFail:
