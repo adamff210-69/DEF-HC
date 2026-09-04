@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import json
 
-import numpy as np
 import pytest
 
+np = pytest.importorskip("numpy", reason="optional ML extra not installed")
 sentence_transformers = pytest.importorskip(
     "sentence_transformers", reason="optional ML extra not installed"
 )
