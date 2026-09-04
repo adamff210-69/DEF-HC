@@ -233,13 +233,17 @@ python -c "from defend_hc2.cli import keygen; keygen()"
 no downloads. To use the real `bge-small-en-v1.5` embedding classifier:
 
 ```bash
-pip install -r requirements-ml.txt                       # torch + sentence-transformers
+pip install -r requirements-ml.txt                       # torch + sentence-transformers + sklearn
 python scripts/train_classifier.py \
-    --out defend_hc2/weights/bge-logistic.json           # downloads bge-small, fits logistic layer
+    --out-weights defend_hc2/weights/bge-logistic.json   # downloads bge-small, sklearn fit (C on calibration PR-AUC)
 export DEFEND_HC2_WEIGHTS=defend_hc2/weights/bge-logistic.json
 export DEFEND_HC2_DEMO_MODE=0
 python -m defend_hc2.api
 ```
+
+See `docs/EVALUATION.md` for the full public-corpus evaluation protocol
+(`prepare_benchmarks.py` → experiment matrix → calibrated final weights
+`bge-final.json`).
 
 Bring your own corpus with `--dataset data.jsonl` (`{"text": "...", "label": 0|1}`
 per line, 1 = injection).
