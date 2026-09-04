@@ -35,6 +35,25 @@ Two options:
 
 All artifacts persist in `/kaggle/working` as notebook output.
 
+## Benchmark protocol (public corpora)
+
+For the full public-corpus evaluation — multi-dataset training, class
+balancing, stacked meta-model, deployment-matched threshold calibration —
+see **`docs/EVALUATION.md`** (results table, four-rule calibration doctrine,
+canonical reproduction command):
+
+```bash
+python scripts/benchmark_classifier.py \
+  --dataset slp-train.jsonl spml-train.jsonl \
+  --eval-file pi-test.jsonl --cal-file slp-cal.jsonl \
+  --class-balance --target-recall 0.98 --epochs 400 \
+  --out-weights weights/bge-final.json --out-metrics bench-metrics-final.json
+```
+
+The resulting `weights/bge-final.json` is the release weights file: point the
+pipeline at it with `weights_path=`, and pair it with calibrated policy bands
+(`PolicyEngine(reject_at=0.80, quarantine_at=0.50, sanitize_at=0.25)`).
+
 ## Gotchas
 
 - The implementation branch is `arena/01a06c45-def-hc`; `main` is a README stub.
