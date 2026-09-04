@@ -1,5 +1,18 @@
 # Evaluation — DEF-HC Dual-Layer Defense
 
+> **Protocol note (post-consolidation):** sections 2–3 below record the
+> *v1 protocol* numbers (single-corpus vs mixed training, calibration
+> doctrine). The consolidated hardening spec then changed the classifier
+> training (sklearn, C-on-calibration-PR-AUC), the fusion math (no-dilution
+> baseline), and the metric set; the **strict-protocol numbers must be
+> regenerated** with the pipeline in `docs/KAGGLE.md` §"Full evaluation
+> pipeline" (prepare → run_experiments → calibrate_policy). If the new,
+> leakage-free numbers fall below the v1 figures, the lower valid result is
+> the one to report (spec: non-negotiable rules). The v1 numbers stand as
+> the motivating investigation, clearly attributed.
+
+## 1. Setup
+
 Empirical evaluation of the framework's two layers: the **content risk
 classifier** (Layer 1, embedding logistic + optional stacked meta-model) on
 public prompt-injection corpora, and the **state-layer protocol** (Layer 3–6)

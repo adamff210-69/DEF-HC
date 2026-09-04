@@ -35,6 +35,52 @@ Two options:
 
 All artifacts persist in `/kaggle/working` as notebook output.
 
+## Full evaluation pipeline (spec protocol)
+
+End-to-end, in order (each script is idempotent and prints its provenance):
+
+```bash
+cd /kaggle/working/DEF-HC
+pip install -q -r requirements-ml.txt
+
+# 1) data: official splits respected, group-aware dedup, foreign corpora
+python scripts/prepare_benchmarks.py --out-dir /kaggle/working/bench-data
+
+# 2) experiment matrix (A: in-dist, B: zero-shot, C: mixed, F: robustness)
+python scripts/run_experiments.py \
+    --data-dir /kaggle/working/bench-data --out-dir /kaggle/working/bench-out
+
+# 3) final production weights: mixed training + deployment-matched calibration
+python scripts/benchmark_classifier.py \
+    --dataset bench-data/slp-train.jsonl bench-data/spml-train.jsonl \
+    --cal-file bench-data/slp-cal.jsonl --eval-file bench-data/pi-test.jsonl \
+    --target-recall 0.98 \
+    --out-weights /kaggle/working/weights/bge-final.json \
+    --out-metrics /kaggle/working/bench-metrics-final.json \
+    --out-scores /kaggle/working/scores-final.jsonl
+
+# 4) policy calibration (validation only) + frozen once-eval on test
+python scripts/calibrate_policy.py \
+    --cal-file bench-data/spml-cal.jsonl --eval-file bench-data/spml-test.jsonl \
+    --weights /kaggle/working/weights/bge-final.json \
+    --out /kaggle/working/calibrated-policy.json
+
+# 5) layer ablation, figures, error analysis, final report
+python scripts/run_ablation.py --weights /kaggle/working/weights/bge-final.json \
+    --cal-file bench-data/spml-cal.jsonl --eval-file bench-data/spml-test.jsonl
+python scripts/make_figures.py --scores /kaggle/working/scores-final.jsonl \
+    --out-dir /kaggle/working/figures
+python scripts/error_analysis.py --scores /kaggle/working/scores-final.jsonl \
+    --out /kaggle/working/reports/error-analysis.md
+python scripts/final_report.py --artifacts /kaggle/working --repo .
+
+# 6) mandated final validation
+python -m pytest -q
+python scripts/evaluate_complementarity.py
+python scripts/run_final_demo.py --weights /kaggle/working/weights/bge-final.json \
+    --db /kaggle/working/final.db --export /kaggle/working/final-export.json --check
+```
+
 ## Benchmark protocol (public corpora)
 
 For the full public-corpus evaluation — multi-dataset training, class
