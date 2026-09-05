@@ -21,8 +21,18 @@ def zero_width_sprinkle(text: str, every: int = 3) -> str:
 
 
 def leetspeak(text: str) -> str:
-    """Letters -> common leet digits (inverse of fold_leetspeak)."""
-    table = str.maketrans({"o": "0", "O": "0", "i": "1", "I": "1", "l": "1",
+    """Letters -> common leet digits.
+
+    Must remain a strict *sub-morphism* of ``fold_leetspeak``
+    (fold∘leet = identity on substituted characters) so the robustness
+    experiment measures the detector behaviour the docstring promises.
+    Only uniquely-invertible glyphs are used — notably ``l`` is NOT
+    folded to ``1`` here, because ``fold_leetspeak`` maps ``1 -> i`` and
+    an ``l -> 1`` source would fold back as ``i`` (e.g. "all" -> "aii"),
+    silently defeating every pattern match and producing a non-invertible
+    transform that conflates detector blindness with a broken probe.
+    """
+    table = str.maketrans({"o": "0", "O": "0", "i": "1", "I": "1",
                            "e": "3", "E": "3", "a": "4", "A": "4", "s": "5",
                            "S": "5", "t": "7", "T": "7"})
     return text.translate(table)
