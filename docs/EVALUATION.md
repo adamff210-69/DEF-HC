@@ -112,9 +112,12 @@ recovery is bounded by literal phrase coverage and stays flat.
 
 The gap ships with a WARNING line and a design-limit note in the final
 report and a full 2,101-example (text_before, text_after, label, score)
-dump in the artifact bundle; mitigation direction: a despaced-view
-cross-encoder reranker, a despace-tolerant embedding, or train-time
-letter-spacing augmentation — out of scope, documented.
+dump in the artifact bundle.  The train-time-augmentation mitigation
+direction from this note was subsequently executed as **Exp-G (§0.8)
+and passes all predeclared gates** (0.4382 → 0.9102 AUC with clean
+performance intact); it ships as experimental weights, not yet folded
+into the deployed weights (reranker/embedding alternatives above remain
+the untried options).
 
 **Provenance notes.** (i) An earlier Exp-F run reported flat recovery
 partly because the leetspeak probe was non-invertible (`l→1` folds back
@@ -159,6 +162,36 @@ D1 full fusion 0.9965 AUC / 0.9485 R · D2 no-embedder 0.6103 AUC /
 bal-**0.5000** (collapses to the dummy — reported as such, gate works) ·
 D3 no-lexical 0.9965 · D4 no-retrieval 0.9932 · D5 no-drift 0.9932 (full
 P/R/F1 on file in `bench-out/bench-metrics-exp-d.json`).
+
+### 0.8 Exp-G — letter-spacing train-time augmentation (research item 1, gates all PASS)
+
+The letter-spacing mitigation experiment
+(`scripts/exp_letter_augment.py`, commit `07a90f3` in the tarball era):
+25% of eligible training rows (every 4th, ≤512 chars, deterministic, no
+RNG) received a label-preserving letter-spaced copy (13,862 train rows
+total); everything else held at Exp-A spec, thresholds from slp-cal only,
+result evaluated once on the development-test split.
+
+| Gate (predeclared in the script, reported verbatim) | Value | Baseline | Verdict |
+|---|---|---|---|
+| clean dev-test AUC loss ≤ 0.01 | 0.9840 | 0.9876 (Exp-A) | **PASS** (−0.0036) |
+| letter-spaced dev-test AUC ≥ 0.75 | **0.9102** | 0.4382 (Exp-F) | **PASS** (+0.4720) |
+| cal benign FPR rise ≤ +2pts | 0.0267 | 0.0333 | **PASS** (improved) |
+
+Full record with thresholds, CIs and environment:
+`bench-out/bench-metrics-exp-g-letteraug.json` (+ scores/exp-g-*.jsonl).
+
+Reading: augmentation largely teaches the encoder the letter-fragmented
+region — perturbed discrimination rises from far-below-random (0.4382)
+to 0.9102 — *without* the prohibited glue-embedding trick and without
+clean-data damage.  One honest caveat remains: the letter-spaced cohort
+carries a benign-FPR premium (0.0729 at the recall@0.95 threshold vs
+0.0267–0.0336 clean on cal/dev-test) — fragmentation still pushes a sliver
+of benign prose across the calibrated cut.  Exp-G weights are
+**experimental and not folded into `weights/bge-final.json`**; the
+production path keeps the glue embargo + limitation label until a
+deploy-decision is taken with a fresh calibration and a fresh
+development-test pass.
 
 ---
 

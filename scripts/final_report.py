@@ -70,6 +70,23 @@ def _fmt_exp_f(rob: dict, indent: str = "      ") -> list[str]:
     return lines
 
 
+def _fmt_exp_g(g: dict, indent: str = "      ") -> list[str]:
+    """Exp-G augmentation record: clean vs letter-spaced + gate ledger."""
+    lines = [f"{indent}({g.get('experiment', 'exp-g')})"]
+    for name, key in (("clean", "clean_dev_test"),
+                      ("letter-spaced", "letterspaced_dev_test")):
+        m = g.get(key) or {}
+        lines.append(f"{indent}{name}: AUC={m.get('roc_auc')} "
+                     f"P={m.get('precision')} R={m.get('recall')} "
+                     f"FPR={m.get('fpr')}")
+    for gname, gate in (g.get("gates") or {}).items():
+        verdict = ("PASS" if gate.get("pass") is True
+                   else "FAIL" if gate.get("pass") is False else "info")
+        lines.append(f"{indent}gate {gname}: value={gate.get('value')} "
+                     f"baseline={gate.get('baseline', '—')} {verdict}")
+    return lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--artifacts", type=Path, required=True,
@@ -99,6 +116,8 @@ def main() -> int:
         out.append(f"  {f.stem}:  [{_DEV_LABEL}]")
         if f.stem == "bench-metrics-exp-f" and isinstance(blob, dict):
             out += _fmt_exp_f(blob)
+        elif "gates" in blob and "clean_dev_test" in blob:
+            out += _fmt_exp_g(blob)
         else:
             out += _fmt_metrics(blob, "      ")
     if not exp_files:
