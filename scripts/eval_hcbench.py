@@ -53,7 +53,9 @@ def score_row(system, session: str, row: dict) -> tuple[float, str]:
     if surface == "rag_doc":
         pr = system.process_user_message(
             session, NEUTRAL_QUERY,
-            retrieved_docs=[{"doc_id": row["id"], "content": row["text"]}])
+            retrieved_docs=[{"doc_id": row["id"], "content": row["text"],
+                             "source_uri": f"hcbench://{row['source']}/"
+                                           f"{row['source_id']}"}])
         comp = pr.decision.component_scores or {}
         assert any(k.startswith("retrieval") and v is not None
                    for k, v in comp.items()), \
