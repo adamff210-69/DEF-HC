@@ -170,7 +170,8 @@ def main() -> int:
             surf_rows[r["surface"]][1].append(s)
         block["per_category"] = {
             str(k): per_slice_report(v[0], v[1], qua, san)
-            for k, v in sorted(cat_rows.items()) if len(v[0]) >= 20}
+            for k, v in sorted(cat_rows.items(), key=lambda kv: str(kv[0]))
+            if len(v[0]) >= 20}
         block["per_surface"] = {
             k: per_slice_report(v[0], v[1], qua, san)
             for k, v in sorted(surf_rows.items())}
