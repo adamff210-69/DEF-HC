@@ -202,6 +202,20 @@ def _token_set(text: str) -> set[str]:
     return {_stem(t) for t in _TOKEN_RE.findall(text.lower())}
 
 
+_FOLD_REPLACE_MIN_CHANGED = 3       # chars
+_FOLD_REPLACE_MIN_RATIO = 0.02      # of normalized length
+_B64_DOMINANT_MIN_COVER = 0.60      # single token covering most of the text
+
+
+def _changed_positions(a: str, b: str, cap: int = 512) -> int:
+    """Chars differing between equal-length prefixes (bounded count)."""
+    n = 0
+    for ca, cb in zip(a[:cap], b[:cap]):
+        if ca != cb:
+            n += 1
+    return n
+
+
 class ContentRiskAnalyzer:
     """Layer 1 content analyzer (spec: ``demo_mode`` switches the backend).
 
@@ -384,20 +398,57 @@ class ContentRiskAnalyzer:
         legitimate input only for the literal phrase inventory in
         ``lexical_scan``.  Embedding glue is out-of-distribution — benign
         prose scores comparably to attack glue, compressing class separation
-        inside the max() and wrecking both FPR and recovery AUC (measured
-        on the dev-test: benign inj 0.80 vs attack 0.85 with glue included).
+        inside the max() (dev-test measurement: benign inj 0.80 vs attack
+        0.85 with glue included).
+
+        View policy (measured defect 2026-09-05, leetspeak/base64 recovery
+        diagnosis): an un-obfuscated view REPLACEs the raw view when it is
+        *materially* different from it — the raw digit-salad is junk evidence
+        in that regime (benign leet/wrapped text embeds in a false-high
+        region and max() was picking it, inflating benigns to ~0.95-1.0).
+        Views that only ADD information keep the raw view:
+
+          * normalized (≠ raw): replaces (zero-width/whitespace restores prose)
+          * folded: replaces ONLY if the fold changed >=
+            _FOLD_REPLACE_MIN_CHANGED chars and >= _FOLD_REPLACE_MIN_RATIO of
+            the normalized text (whole-text leet); natural-digit prose
+            (trailing order numbers) keeps its raw view alongside
+          * b64 decoded segments: ADDITIVE by default (token embedded in
+            prose); if one token covers >= _B64_DOMINANT_MIN_COVER of the
+            text (whole-message wrap), the decoded view REPLACES raw
         """
         if self.demo_mode or self._model is None or not self._clf_weights:
             raise RuntimeError("variant_max_ml_score requires trained ML mode")
         text = Canonicalizer.normalize_text(text)
+        vs = _norm.variants(text)
+        raw = vs["raw"]
+        base = vs.get("normalized", raw)
+        folded = vs.get("folded")
+        if folded is not None and folded != base:
+            changed = _changed_positions(base, folded)
+            if (changed >= _FOLD_REPLACE_MIN_CHANGED
+                    and changed / max(len(folded), 1) >= _FOLD_REPLACE_MIN_RATIO):
+                base = folded  # whole-text leet: restored text IS canonical
+        b64_view_tags = sorted(k for k in vs if k.startswith("b64_"))
+        dominant = False
+        if b64_view_tags:
+            stripped = raw.strip()
+            spans = [m.end() - m.start()
+                     for m in _norm._B64_TOKEN_RE.finditer(raw[:2048])]
+            dominant = bool(spans) and max(spans) >= _B64_DOMINANT_MIN_COVER * max(
+                len(stripped), 1)
         views: list[str] = []
-        for tag, v in _norm.variants(text).items():
-            if tag == "despaced":  # literal-scan-only view, not for embedding
-                continue
-            if v not in views:
-                views.append(v)
-            if len(views) >= max_views:
-                break
+        if dominant:
+            # whole-message wrap: the decoded content IS the text; raw garble out
+            for k in b64_view_tags:
+                if vs[k] not in views:
+                    views.append(vs[k])
+        else:
+            views.append(base)  # canonical view (possibly replaced by fold/norm)
+            for k in b64_view_tags:  # additive: decoded token + its prose context
+                if vs[k] not in views:
+                    views.append(vs[k])
+        views = views[:max_views]
         probs = []
         for vec in self._embed(views):
             z = sum(w * x for w, x in zip(self._clf_weights, vec)) + self._clf_bias
