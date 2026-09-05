@@ -2,8 +2,9 @@
 
 Runs Exp-A .. Exp-F against data produced by prepare_benchmarks.py, saving
 ``bench-metrics-exp-*.json`` and ``scores-exp-*.jsonl`` under --out-dir, plus
-``reports/reproducibility.json``.  Frozen-test decisions (thresholds,
-policies) are taken on calibration data and then evaluated ONCE (Exp-E).
+``reports/reproducibility.json``.  Predeclared decisions (thresholds,
+policies) are taken on calibration data and then evaluated ONCE (Exp-E);
+the evaluation split is development_test_previously_observed.
 
 Intended for network-enabled runners (Kaggle).  All scoring logic delegates
 to defend_hc2.modeling so numbers are computed by tested code paths.
