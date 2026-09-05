@@ -70,7 +70,8 @@ def main() -> int:
     slp_tr, slp_cal, pi_test = (load("slp-train.jsonl"), load("slp-cal.jsonl"),
                                 load("pi-test.jsonl"))
     pi_test, removed = remove_overlap(pi_test, slp_tr, slp_cal)
-    assert removed == 0, "dev-test guarded by overlap removal"
+    print(f"dev-test overlap removal dropped {removed} examples "
+          f"(clamp-tolerant canonicalization anti-leak step)")
 
     extra = letter_spacing_augment(slp_tr, every=args.every,
                                    max_chars=args.max_chars)
@@ -140,6 +141,7 @@ def main() -> int:
         "a_priori": {"every": args.every, "max_chars": args.max_chars,
                      "train_rows_base": len(slp_tr),
                      "train_rows_augmented": len(aug_tr),
+                     "dev_test_overlap_removed": removed,
                      "calibration": "slp-cal only",
                      "deployment_criterion": key},
         "clean_dev_test": rep_clean, "letterspaced_dev_test": rep_let,
