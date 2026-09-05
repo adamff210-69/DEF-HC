@@ -106,7 +106,8 @@ def main() -> int:
     ap.add_argument("--split", default="test")
     args = ap.parse_args()
 
-    from defend_hc2 import DEFEND_HC2, ToolRegistry
+    from defend_hc2 import DEFEND_HC2
+    from defend_hc2.provenance import ToolRegistry
 
     registry = ToolRegistry()
     registry.register_tool(BENCH_TOOL["name"], BENCH_TOOL["key"],

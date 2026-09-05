@@ -41,7 +41,8 @@ def main() -> int:
     if not sealed_fp.exists():
         raise SystemExit(f"missing {sealed_fp} — run scripts/build_hcbench.py")
 
-    from defend_hc2 import DEFEND_HC2, ToolRegistry
+    from defend_hc2 import DEFEND_HC2
+    from defend_hc2.provenance import ToolRegistry
     from scripts.eval_hcbench import (
         BENCH_TOOL,
         NEUTRAL_QUERY,
