@@ -46,11 +46,26 @@ def test_report_contains_exp_auc(capsys, tmp_path, monkeypatch):
 def test_exp_f_obfuscation_table_and_anticorrelation_warning(capsys, tmp_path,
                                                              monkeypatch):
     payload = {"clean": {"roc_auc": 0.99},
-               "per_transform": {"leetspeak": {"perturbed_auc": 0.3312,
-                                               "recovery_auc": 0.38}}}
+               "per_transform": {"mystery_transform": {"perturbed_auc": 0.3312,
+                                                       "recovery_auc": 0.38}}}
     out = _run(capsys, tmp_path, {"bench-metrics-exp-f": payload}, monkeypatch)
     assert "0.3312" in out
-    assert "WARNING" in out and "anti-correlated" in out
+    assert "WARNING" in out and "unexplained" in out and "pipeline bug" in out
+
+
+def test_exp_f_recovery_disproves_bug_hypothesis(capsys, tmp_path, monkeypatch):
+    """Sub-0.5 perturbed + high recovery = EXPECTED note, never 'pipeline bug';
+    known limitation gets its own labeled line; no WARNING at all."""
+    payload = {"clean": {"roc_auc": 0.99},
+               "per_transform": {
+                   "leetspeak": {"perturbed_auc": 0.3516, "recovery_auc": 0.9878},
+                   "letter_spacing_extreme": {"perturbed_auc": 0.4382,
+                                              "recovery_auc": 0.4383},
+               }}
+    out = _run(capsys, tmp_path, {"bench-metrics-exp-f": payload}, monkeypatch)
+    assert "NOTE" in out and "ANTI-CORRELATED" in out
+    assert "LIMITATION" in out and "character-level fragmentation" in out
+    assert "WARNING" not in out, out
 
 
 def test_empty_exp_dir_stays_honest(capsys, tmp_path, monkeypatch):

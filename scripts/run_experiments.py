@@ -239,19 +239,28 @@ def main() -> int:
                 "clean_auc": rep_a["roc_auc"], "perturbed_auc": rep_p["roc_auc"],
                 "recovery_auc": rec_auc,
             }
-            # Sub-0.5 AUC: treat as pipeline anomaly — dump raw examples
-            # (text_before, text_after, label, score) instead of averaging.
+            # Sub-0.5 perturbed AUC: dump raw examples (text_before,
+            # text_after, label, perturbed_score, recovery risk) — never
+            # average an anomaly away.  Caveat text is recovery-aware
+            # (defend_hc2.reporting.transform_caveat_lines), so restoration
+            # is distinguished from genuine defects.
             if (rep_p["roc_auc"] or 1.0) < 0.5:
+                from defend_hc2.reporting import transform_caveat_lines
+
+                p_ml_rows = probs(Xp, fit_a)
                 dump = out / f"exp-f-{name}-examples.jsonl"
                 with dump.open("w", encoding="utf-8") as fh:
-                    for (t0, y0), (t1, _), risk in zip(pi_test, perturbed, risks):
+                    for ((t0, y0), (t1, _), p_raw, risk) in zip(
+                            pi_test, perturbed, p_ml_rows, risks):
                         fh.write(json.dumps({
                             "text_before": t0[:400], "text_after": t1[:400],
-                            "label": y0, "recovery_risk": risk,
+                            "label": y0, "perturbed_score": p_raw,
+                            "recovery_risk": risk,
                         }) + "\n")
-                print(f"    WARNING: {name} AUC {rep_p['roc_auc']} < 0.5 — "
-                      f"scores anti-correlated; dumped {len(risks)} examples "
-                      f"to {dump.name}")
+                print(f"    dumped {len(risks)} examples to {dump.name}")
+                for line in transform_caveat_lines(
+                        name, rep_p["roc_auc"], rec_auc, indent="    "):
+                    print(line)
         except Exception as exc:
             print(f"  transform {name} failed: {exc} (recorded, continuing)")
             rob["per_transform"][name] = {"error": str(exc)[:160]}

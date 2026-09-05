@@ -50,7 +50,11 @@ def _fmt_metrics(m: dict | None, indent: str) -> list[str]:
 
 def _fmt_exp_f(rob: dict, indent: str = "      ") -> list[str]:
     """Obfuscation table (BUG-D/Step 6): clean vs perturbed vs recovery,
-    with an explicit anti-correlation warning for any sub-0.5 AUC."""
+    with recovery-aware caveats from defend_hc2.reporting — restoration
+    disproves the bug hypothesis, known limitations are labeled as such,
+    and WARNING is reserved for genuinely unexplained anomalies."""
+    from defend_hc2.reporting import transform_caveat_lines
+
     clean = (rob.get("clean") or {}).get("roc_auc")
     lines = [f"{indent}clean AUC: {clean}",
              f"{indent}{'transform':<14}{'perturbed AUC':>14}{'recovery AUC':>14}"]
@@ -60,26 +64,9 @@ def _fmt_exp_f(rob: dict, indent: str = "      ") -> list[str]:
             continue
         lines.append(f"{indent}{name:<14}{row.get('perturbed_auc')!s:>14}"
                      f"{row.get('recovery_auc')!s:>14}")
-        p_auc = row.get("perturbed_auc")
-        if isinstance(p_auc, (int, float)) and p_auc < 0.5:
-            lines.append(
-                f"{indent}WARNING: {name} AUC {p_auc} < 0.5 — scores "
-                f"anti-correlated with labels; treat as a pipeline bug until "
-                f"fixed, not a robustness result.")
-        r_auc = row.get("recovery_auc")
-        if isinstance(r_auc, (int, float)) and r_auc < 0.5:
-            lines.append(
-                f"{indent}WARNING: {name} recovery AUC {r_auc} < 0.5 — "
-                f"remaining anti-correlated gap after normalization; see "
-                f"per-example dump exp-f-{name}-examples.jsonl.")
-        if name == "letter_spacing_extreme":
-            lines.append(
-                f"{indent}Note: letter_spacing_extreme heavily fragments "
-                f"subword tokenization, yielding AUC ~0.44. Because we "
-                f"explicitly prohibit embedding 'despaced' glue strings to "
-                f"prevent benign false positives, this is an expected "
-                f"limitation of the current model without train-time "
-                f"augmentation.")
+        lines += transform_caveat_lines(
+            name, row.get("perturbed_auc"), row.get("recovery_auc"),
+            dump_name=f"exp-f-{name}-examples.jsonl", indent=indent)
     return lines
 
 
