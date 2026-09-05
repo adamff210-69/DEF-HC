@@ -87,6 +87,26 @@ def _fmt_exp_g(g: dict, indent: str = "      ") -> list[str]:
     return lines
 
 
+def _fmt_exp_h(g: dict, indent: str = "      ") -> list[str]:
+    """Exp-H: named external benchmark table (frozen system, no tuning)."""
+    lines = []
+    for bench, row in sorted((g.get("benchmarks") or {}).items()):
+        q = (row.get("at_quarantine_cutoff") or {})
+        s = (row.get("at_sanitize_cutoff") or {})
+        lines.append(
+            f"{indent}{bench:<12} n={row.get('n')}  "
+            f"AUC={row.get('roc_auc')}  "
+            f"recall@q={q.get('detection_recall')}  "
+            f"benignFPR@q={q.get('benign_fpr')}  "
+            f"benignFPR@s={s.get('benign_fpr')}")
+        if row.get("overrefusal_dump"):
+            lines.append(f"{indent}  over-refusal dump: "
+                         f"{row['overrefusal_dump']}")
+    for name, pair in sorted((g.get("paired_auc") or {}).items()):
+        lines.append(f"{indent}paired AUC {name}: {pair.get('roc_auc')}")
+    return lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--artifacts", type=Path, required=True,
@@ -118,6 +138,8 @@ def main() -> int:
             out += _fmt_exp_f(blob)
         elif "gates" in blob and "clean_dev_test" in blob:
             out += _fmt_exp_g(blob)
+        elif "benchmarks" in blob and "paired_auc" in blob:
+            out += _fmt_exp_h(blob)
         else:
             out += _fmt_metrics(blob, "      ")
     if not exp_files:
