@@ -209,6 +209,62 @@ Reading, stated plainly:
 Artifacts: `bench-metrics-exp-h-external-{balanced,highrecall}.json`,
 `bench-data-ext/ext-manifest.json`, over-refusal dumps where populated.
 
+### 0.10 HC-Bench — provenance-tracked surface-routed benchmark (frozen system)
+
+Build (`scripts/build_hcbench.py`, seed 42): 8 loaders produced 5,017
+rows after exact dedup (23 removed), train/cal anti-leak removal (1),
+and `semantic` re-labeling of 1,146 lexically-invisible attack rows;
+skipped sources are named with verbatim reasons in
+`reports/hcbench-manifest.json` (wildjailbreak gated; bipia hub-id
+dead; five sources deferred with unverified layouts — never
+substituted).  Group-aware (category,surface) 4-way split:
+train 2,510 / cal 1,254 / test 1,253 / **sealed 1,254 (never used)**;
+benign share 0.693.  The sealed split is hashed and consumed ONLY by
+`scripts/eval_sealed.py` (one-shot guard + static repo scan in the
+suite) and has NOT been evaluated.
+
+hcbench-test, production channels, FROZEN bands (no tuning anywhere;
+routing proved at scoring time — rag_doc rows must hit the retrieval
+component, tool rows must carry a provenance verdict):
+
+| Slice (≥20 rows) | attack recall@q | benign FPR@q | FPR@s (sanitize band) |
+|---|---|---|---|
+| Overall (n=1,253; AUC 0.8758) | 0.8329 | 0.1954 | 0.5862 |
+| `jailbreak` (advbench/JBB/jackhhao/hackaprompt) | **1.0000** | — | — |
+| `instruction_override` (gandalf) | 0.9885 | — | — |
+| `semantic` (lexically-invisible attacks) | 0.7293–0.914 | — | — |
+| `injection` (deepset generic) | 0.8000 | 0.0857 | 0.2857 |
+| benign XSTest/OR/JBB hard-benign | — | 0.229 | 0.5561 |
+| benign instructions (alpaca/dolly) | — | 0.1304 | 0.2802 |
+| benign retrieved passages (MS MARCO, rag_doc) | — | 0.005 | 1.000 |
+| benign generic (deepset/jackhhao benign) | — | **0.6397** | 0.8088 |
+
+Reading, stated plainly:
+
+1. **Attack-side generalization holds**: near-neighbors of the training
+   lineage (gandalf overrides, advbench/JBB-class jailbreaks) flag at
+   .99–1.00 recall on frozen bands; the deliberately hard `semantic`
+   slice (lexically-invisible) lands .73–.91.
+2. **Regime boundary (honest negative):** benign rows authored inside
+   foreign *jailbreak corpora* (deepset/jackhhao "benign" — jailbreak-
+   adjacent phrasing by construction) hit FPR 0.64 at the frozen
+   quarantine band.  Nothing was recalibrated to hide this; the
+   regime-matched fix is calibration on `hcbench-cal` (band provenance
+   unchanged), for which the recorded cal-derived operating point is
+   recall@0.95 → threshold 0.0035 (bench-hcbench-metrics.json).
+   Foreign-corpus benign text is a different benign regime than
+   S-Labs/SPML benign.
+3. **Surface routing matters:** benign retrieved documents almost never
+   quarantine (0.005) but always trigger the sanitize strip-and-allow
+   band (1.0) — unprovenanced third-party content is carried only after
+   sanitization — the designed posture, now measured on 1,000 real
+   MS MARCO passages.
+
+Artifacts: `reports/hcbench-manifest.json`, `reports/sealed-manifest.json`,
+`bench-out/bench-hcbench-metrics.json`, `hcbench/hcbench-*.jsonl`.
+Label: `hcbench_test_production_frozen_policies`; the sealed pass will
+carry `blind_holdout_evaluated_once` and runs exactly once, by flag.
+
 ### 0.7 Layer ablation (Exp-D, SPML calibrated path)
 
 D1 full fusion 0.9965 AUC / 0.9485 R · D2 no-embedder 0.6103 AUC /
