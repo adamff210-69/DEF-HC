@@ -88,6 +88,12 @@ def per_slice_report(ys, scores, quarantine_cut, sanitize_cut):
 
 def run_evaluation(split_rows: list[dict], system, session: str) \
         -> tuple[list[float], list[str]]:
+    try:
+        system.create_session(
+            "HC-Bench evaluation session (neutral assistant).",
+            session_id=session)
+    except Exception:
+        pass  # already exists (in-memory ledger restore path)
     scores, proofs = [], []
     for row in split_rows:
         s, proof = score_row(system, session, row)
