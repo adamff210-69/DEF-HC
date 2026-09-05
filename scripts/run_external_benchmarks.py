@@ -131,7 +131,7 @@ def main() -> int:
         return {"positives": pos_bench, "benign_partner": neg_bench}, \
             round(roc_auc(ys_p + ys_n, risks), 4)
     pairs = {}
-    for spec in (("advbench", "xstest-v2"), ("advbench", "jbb-benign"),
+    for spec in (("advbench", "xstest"), ("advbench", "jbb-benign"),
                  ("jbb-harmful", "jbb-benign")):
         got = _pair(*spec)
         if got:

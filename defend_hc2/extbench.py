@@ -28,8 +28,8 @@ JBB_HARMFUL_URL = ("https://huggingface.co/datasets/JailbreakBench/"
                    "JBB-Behaviors/raw/main/data/harmful-behaviors.csv")
 JBB_BENIGN_URL = ("https://huggingface.co/datasets/JailbreakBench/"
                   "JBB-Behaviors/raw/main/data/benign-behaviors.csv")
-XSTEST_V2_URL = ("https://raw.githubusercontent.com/paul-rottger/"
-                 "exaggerated-safety/main/xstest_v2_prompts.csv")
+XSTEST_URL = ("https://raw.githubusercontent.com/paul-rottger/xstest/"
+              "main/xstest_prompts.csv")  # canonical NAACL 2024 file (450 rows)
 
 BENCH_META = {
     "advbench": {
@@ -48,8 +48,8 @@ BENCH_META = {
         "citation": "Chao et al. 2024, JailbreakBench (JBB-Behaviors)",
         "expected_rows": 100,
     },
-    "xstest-v2": {
-        "url": XSTEST_V2_URL, "license": "CC BY 4.0",
+    "xstest": {
+        "url": XSTEST_URL, "license": "CC BY 4.0",
         "citation": "Röttger et al. 2024, XSTest (NAACL 2024)",
         "expected_rows": 450,
     },
@@ -85,16 +85,23 @@ def parse_jbb_csv(src: str, *, split: str) -> list[Row]:
 
 
 def parse_xstest_csv(src: str) -> list[Row]:
-    """XSTest v2: `type` prefixed with 'contrast_' = unsafe (label 1)."""
+    """XSTest: explicit `label` column (safe/unsafe) is authoritative;
+    falls back to the `contrast_` type-prefix rule from the paper when
+    the label column is absent (e.g. v2 arXiv-era exports)."""
     out: list[Row] = []
     for rec in csv.DictReader(io.StringIO(src)):
         prompt = (rec.get("prompt") or "").strip()
         ptype = (rec.get("type") or "").strip()
+        explicit = (rec.get("label") or "").strip().lower()
         if prompt:
-            label = 1 if ptype.startswith("contrast_") else 0
+            if explicit in ("safe", "unsafe"):
+                label = 1 if explicit == "unsafe" else 0
+            else:
+                label = 1 if ptype.startswith("contrast_") else 0
             out.append((prompt, label, {
                 "xstest_type": ptype,
-                "id_v2": (rec.get("id_v2") or rec.get("id_v1") or "").strip(),
+                "id": (rec.get("id") or rec.get("id_v2")
+                       or rec.get("id_v1") or "").strip(),
             }))
     return out
 
@@ -103,5 +110,5 @@ PARSERS = {
     "advbench": lambda src: parse_advbench_csv(src),
     "jbb-harmful": lambda src: parse_jbb_csv(src, split="harmful"),
     "jbb-benign": lambda src: parse_jbb_csv(src, split="benign"),
-    "xstest-v2": parse_xstest_csv,
+    "xstest": parse_xstest_csv,
 }
