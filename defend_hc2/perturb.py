@@ -39,6 +39,45 @@ def leetspeak(text: str) -> str:
 
 
 def whitespace_fragment(text: str) -> str:
+    """Legacy combined transform — superseded by the word/letter split.
+
+    Kept so any artifact referencing the old name errors loudly instead of
+    silently aliasing.
+    """
+    raise RuntimeError(
+        "whitespace_fragment was split into word_whitespace and "
+        "letter_spacing_extreme (pooled scoring hid a 0.99 success and an "
+        "OOD failure in one number; update callers)")
+
+
+def word_whitespace(text: str) -> str:
+    """Insert 2-4 spaces between every word.
+
+    Deterministic by design — the gap width cycles 2,3,4 by word index
+    (a seeded RNG would give identical behavior only if re-seeded every
+    call; an explicit cycle keeps transforms pure and reproducible).
+    Word-level multi-spacing leaves subword tokenization mostly intact
+    (embedder handles it; this meansure in-distribution spacing noise).
+    Fallback: no whitespace in the input → return the original string.
+    """
+    words = text.split()
+    if len(words) <= 1:
+        return text
+    out = words[0]
+    for i, w in enumerate(words[1:]):
+        out += " " * (2 + (i % 3)) + w
+    return out
+
+
+def letter_spacing_extreme(text: str) -> str:
+    """Join EVERY character with a single space (letter-fragmentation).
+
+    This destroys subword tokenization — out-of-distribution for the
+    embedding model by construction.  Despaced-collapse recovery is
+    lexical-literal only (glue strings are never embedded, by policy), so
+    degraded scores on this transform are an expected, documented
+    limitation without train-time augmentation — not a pipeline bug.
+    """
     return " ".join(text)
 
 
@@ -63,7 +102,8 @@ def delimiter_stuff(text: str, delim: str = "|") -> str:
 TRANSFORMS = {
     "zero_width": zero_width_sprinkle,
     "leetspeak": leetspeak,
-    "whitespace": whitespace_fragment,
+    "word_whitespace": word_whitespace,
+    "letter_spacing_extreme": letter_spacing_extreme,
     "base64": base64_wrap,
     "casing": casing_shuffle,
     "delimiter": delimiter_stuff,

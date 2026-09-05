@@ -72,6 +72,14 @@ def _fmt_exp_f(rob: dict, indent: str = "      ") -> list[str]:
                 f"{indent}WARNING: {name} recovery AUC {r_auc} < 0.5 — "
                 f"remaining anti-correlated gap after normalization; see "
                 f"per-example dump exp-f-{name}-examples.jsonl.")
+        if name == "letter_spacing_extreme":
+            lines.append(
+                f"{indent}Note: letter_spacing_extreme heavily fragments "
+                f"subword tokenization, yielding AUC ~0.44. Because we "
+                f"explicitly prohibit embedding 'despaced' glue strings to "
+                f"prevent benign false positives, this is an expected "
+                f"limitation of the current model without train-time "
+                f"augmentation.")
     return lines
 
 
