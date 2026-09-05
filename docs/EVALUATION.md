@@ -67,56 +67,81 @@ fully confirmed under the strict protocol).
 
 ### 0.5 Exploitation robustness (Exp-F, S-Labs test — development_test_previously_observed)
 
-Clean / perturbed / normalization-recovery = fused(raw-ML, variant-aware
-lexical) ROC-AUC per transform — threshold-free, so no calibration needed.
+Clean / perturbed / normalization-recovery = **production** fused scoring
+(`variant_max_ml_score` + `lexical_scan` + `combine_signals`; recovery is
+threshold-free ROC-AUC).  The recovery path is the same code the
+production analyzer runs — never an inline reimplementation.
 
 | Transform | Clean | Perturbed | Recovery |
 |---|---|---|---|
 | zero-width | 0.9876 | 0.9876 | 0.9876 |
 | casing | 0.9876 | 0.9876 | 0.9877 |
 | delimiter | 0.9876 | 0.9845 | 0.9845 |
-| **leetspeak** | 0.9876 | **0.3516** | 0.3563 |
-| **whitespace (char-spaced)** | 0.9876 | **0.4382** | 0.4382 |
-| **base64 whole-message wrap** | 0.9876 | **0.3781** | 0.3830 |
+| **leetspeak** | 0.9876 | **0.3516** | **0.9878** |
+| **base64 whole-message wrap** | 0.9876 | **0.3781** | **0.9877** |
+| **whitespace (letter-fragmented)** | 0.9876 | **0.4382** | **0.4383** |
 
-**The core vulnerability finding (reported as-is).** Character-level
-obfuscation defeats the embedder (AUC → .33–.44), and the normalization
-backup layer recovers almost nothing *on this corpus* — because the
-lexical pattern bank is near-uninformative on S-Labs phrasings in the
-first place (its clean-data AUC is 0.54; see §0.1). Mechanism verified:
-decoded variants exist (base64 whole-message wraps do decode after the
-MAX_B64 caps were raised 1024/512 → 4096/3072), fold restores canonical
-leet keywords (probe invertibility is regression-tested), but pattern
-hits are sparse. Recovery is strong on canonical-phrase attacks
-(local probes: fused AUC 1.0); it is weak precisely where the attacks are
-subtle. Remaining gaps, honestly open:
+**The headline robustness finding, stated precisely.** Character-level
+obfuscation defeats the raw embedding pass (AUC .99 → .35–.44; sub-0.5 is
+treated in-repo as a pipeline signal with forced per-example dumps, not
+"a robustness score").  For leetspeak and whole-message base64, the
+normalization layer recovers the FULL clean discrimination (recovery
+≈ .988) because the fold/decode view restores the original prose into the
+classifier's embedding region — verified on production scoring calls
+only.  **Letter-fragmentation ("i g n o r e …") is the one remaining
+real gap**: the despaced collapse feeds the literal phrase inventory only
+and is never embedded (embedding glued text re-compressed class
+separation inside max() — measured benign inj 0.80 vs attack 0.85);
 
-- no char-spacing-collapse normalization view (whitespace recovery 0.44);
-- leet blindness is inherent to bge embeddings with no textual redundancy
-  for non-canonical phrasings.
+recovery is therefore bounded by literal phrase coverage and stays flat.
+The gap ships with a WARNING line in the final report and a full
+2,101-example (text_before, text_after, label, score) dump in the
+artifact bundle; mitigation direction: a despaced-view cross-encoder
+reranker or a despace-tolerant embedding — out of scope, documented.
 
-Mitigation direction: a despace variant (subject to FPR constraint) and
-adversarially-robust embedding augmentation. **Not fixed here — fixed
-by reporting.**
+**Provenance notes.** (i) An earlier Exp-F run reported flat recovery
+partly because the leetspeak probe was non-invertible (`l→1` folds back
+as `i`) and the recovery path reimplemented scoring inline — both fixed
+and regression-pinned.  (ii) An intermediate variant-max design embedded
+the despaced glue view; measured on dev-test it inflated benigns and
+capped recovery ≈ 0.6, so it was replaced by the current view policy
+(restoration views REPLACE junk raw views under materiality gates;
+decoded-segment views are additive unless one token dominates the row).
+Both defects and their fixes are in git history with regression tests.
 
-### 0.6 Calibrated policy on SPML development test (previously observed)
+### 0.6 Calibrated policy, two predeclared regimes (FLAW-3)
 
-Predeclared bands (max precision s.t. recall ≥ 0.98 on calibration;
-frozen before the single test evaluation): **0.30 / 0.55 / 0.85**.
+Bands selected on calibration data only, objective max precision s.t.
+recall ≥ 0.95, frozen before the single once-evaluation per regime; the
+evaluation split is labeled `development_test_previously_observed`.
 
-| Split | Precision | Recall | Benign FPR | ALLOW / SANITIZE / QUARANTINE / REJECT |
-|---|---|---|---|---|
-| calibration (n=3,183) | 0.9873 | 0.9838 | 0.0491 | 661 / 80 / 1884 / 558 |
-| **dev test (n=3,183, previously observed)** | **0.9892** | **0.9844** | **0.0399** | 689 / 84 / 1869 / 541 |
+| Regime | Cal set (base rate) | Bands (S/Q/R) | Split | Precision | Recall | Benign FPR |
+|---|---|---|---|---|---|---|
+| **balanced** | slp-cal (0.50) | 0.20 / 0.55 / 0.85 | calibration | 0.9581 | 0.9572 | 0.0419 |
+|  |  |  | dev test | 0.9508 | 0.9191 | **0.0476** |
+| **high-recall** | spml-cal (0.80) | 0.30 / 0.55 / 0.85 | calibration | 0.9850 | 0.9862 | 0.0583 |
+|  |  |  | dev test | 0.9876 | 0.9860 | **0.0458** |
 
-Cal→test transfer within ~1 point on every axis — predeclared
-calibration works when the calibration distribution matches deployment.
+Cal→test transfer within ~1–3 points on every axis.  FLAW-3 confirmed
+empirically: bands calibrated on the ~80%-positive SPML and applied to
+balanced traffic produced benign FPR 0.44 before `--cal-target` presets
+existed; regime-matched calibration restores single-digit FPR at recall
+0.92–0.99.
 
-**Provenance note.** An earlier Exp-F run reported flat recovery partly
-because the leetspeak probe was non-invertible (`l→1` folds back as `i`,
-scrambling e.g. "all"→"411"→"aii"). The probe was fixed and
-regression-pinned; the table above is post-fix, and the residual leet
-blindness is the true finding.
+**Feasibility disclosure (kept as strict xfail in the suite).**  The
+spec target "benign FPR ≤ 1% at recall ≥ 0.95" is infeasible for this
+score distribution: the predeclared objective delivers FPR ≈ 4–5% at
+recall ≈ 0.92–0.99, and reaching 1% requires recall << 0.95.  The suite
+documents the unmet target
+(`tests/test_signal_hardening.py::test_policy_calibration`,
+`xfail(strict=True)`) instead of tuning thresholds to a test outcome.
+
+### 0.7 Layer ablation (Exp-D, SPML calibrated path)
+
+D1 full fusion 0.9965 AUC / 0.9485 R · D2 no-embedder 0.6103 AUC /
+bal-**0.5000** (collapses to the dummy — reported as such, gate works) ·
+D3 no-lexical 0.9965 · D4 no-retrieval 0.9932 · D5 no-drift 0.9932 (full
+P/R/F1 on file in `bench-out/bench-metrics-exp-d.json`).
 
 ---
 
