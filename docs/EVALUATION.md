@@ -9,7 +9,10 @@
 
 Protocol: sklearn classifier (C selected on calibration PR-AUC), seed 42,
 thresholds from calibration data only, S-Labs official splits preserved
-exactly, `pi-test` frozen until one final evaluation, duplicate/template
+exactly, `pi-test` used once at the end (but see **BUG-E**: it was
+inspected during development — all such metrics are labeled
+``development_test_previously_observed``; no blind final holdout exists),
+duplicate/template
 groups prevented from crossing splits, git `58cefce`.
 
 ### 0.1 Headline — final weights run (mixed S-Labs+SPML train, matched cal, t for recall 0.98)
@@ -34,7 +37,7 @@ Cal→test transfer gap ≈ 4.6 recall points — a property of official-split
 distribution shift, documented since v1; the final weights run targets 0.98
 to compensate (delivers 0.9628).
 
-### 0.3 Exp-B: zero-shot foreign transfer (Exp-A model, frozen thresholds)
+### 0.3 Exp-B: zero-shot foreign transfer (Exp-A model, predeclared thresholds)
 
 | Corpus | AUC | Precision | Recall |
 |---|---|---|---|
@@ -62,7 +65,7 @@ but pooled calibration silently trades 7.8 recall points on S-Labs.
 **Calibration distribution must match deployment domain** (v1 doctrine,
 fully confirmed under the strict protocol).
 
-### 0.5 Exploitation robustness (Exp-F, held-out S-Labs test)
+### 0.5 Exploitation robustness (Exp-F, S-Labs test — development_test_previously_observed)
 
 Clean / perturbed / normalization-recovery = fused(raw-ML, variant-aware
 lexical) ROC-AUC per transform — threshold-free, so no calibration needed.
@@ -96,7 +99,7 @@ Mitigation direction: a despace variant (subject to FPR constraint) and
 adversarially-robust embedding augmentation. **Not fixed here — fixed
 by reporting.**
 
-### 0.6 Calibrated policy on frozen SPML test
+### 0.6 Calibrated policy on SPML development test (previously observed)
 
 Predeclared bands (max precision s.t. recall ≥ 0.98 on calibration;
 frozen before the single test evaluation): **0.30 / 0.55 / 0.85**.
@@ -104,7 +107,7 @@ frozen before the single test evaluation): **0.30 / 0.55 / 0.85**.
 | Split | Precision | Recall | Benign FPR | ALLOW / SANITIZE / QUARANTINE / REJECT |
 |---|---|---|---|---|
 | calibration (n=3,183) | 0.9873 | 0.9838 | 0.0491 | 661 / 80 / 1884 / 558 |
-| **frozen test (n=3,183)** | **0.9892** | **0.9844** | **0.0399** | 689 / 84 / 1869 / 541 |
+| **dev test (n=3,183, previously observed)** | **0.9892** | **0.9844** | **0.0399** | 689 / 84 / 1869 / 541 |
 
 Cal→test transfer within ~1 point on every axis — predeclared
 calibration works when the calibration distribution matches deployment.

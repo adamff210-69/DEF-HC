@@ -47,6 +47,7 @@ _LEET_TABLE: Final = str.maketrans(
 _B64_TOKEN_RE: Final = re.compile(r"[A-Za-z0-9+/]{%d,}={0,2}" % MIN_B64_TOKEN_CHARS)
 _WS_RUN_RE: Final = re.compile(r"[ \t]{2,}")
 _NL_RUN_RE: Final = re.compile(r"\n{3,}")
+_DESPACE_RE: Final = re.compile(r"\s+")
 
 
 def basic_normalize(text: str, max_chars: int = MAX_INPUT_CHARS) -> str:
@@ -99,8 +100,13 @@ def b64_variants(text: str) -> list[str]:
 def variants(text: str) -> dict[str, str]:
     """All detector views of ``text`` in deterministic order.
 
-    Keys: ``raw`` (always), ``normalized``, ``folded``, ``b64_0``…
-    Variants identical to an earlier view are omitted.
+    Keys: ``raw`` (always), ``normalized``, ``folded``, ``despaced``,
+    ``b64_0``…  Variants identical to an earlier view are omitted.
+    ``despaced`` collapses ALL whitespace (char-fragment obfuscation) and
+    exists so detectors can match literal phrase inventory that only
+    *appears* after despace (resource bounds unchanged: input is already
+    capped by MAX_INPUT_CHARS, and this view is computed on the same
+    bounded normalized string).
     """
     out: dict[str, str] = {"raw": text[:MAX_INPUT_CHARS]}
     normalized = basic_normalize(text)
@@ -109,6 +115,9 @@ def variants(text: str) -> dict[str, str]:
     folded = fold_leetspeak(normalized)
     if folded != normalized:
         out["folded"] = folded
+    despaced = _DESPACE_RE.sub("", normalized)
+    if despaced and despaced not in out.values():
+        out["despaced"] = despaced
     for i, dec in enumerate(b64_variants(normalized)):
         out[f"b64_{i}"] = dec
     return out

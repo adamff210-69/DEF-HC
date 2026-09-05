@@ -59,11 +59,25 @@ python scripts/benchmark_classifier.py \
     --out-metrics /kaggle/working/bench-metrics-final.json \
     --out-scores /kaggle/working/scores-final.jsonl
 
-# 4) policy calibration (validation only) + frozen once-eval on test
+# 4) policy calibration (validation only; default --cal-target balanced)
+#    + once-eval on development test (development_test_previously_observed)
+#
+# FLAW-3 / Step 5: --cal-target balanced  → slp-cal.jsonl  (~50% inj; FPR-controlled,
+#   use for S-Labs-like traffic — Exp-A/Exp-C deployments; the 'balanced' test
+#   asserts benign FPR <= 1% on the S-Labs development-test set)
+#                  --cal-target high-recall → spml-cal.jsonl (~78% inj; aggressive,
+#   use only for high-attack-rate traffic — Exp-B/Exp-D style foreign corpora)
+# An explicit --cal-file always overrides the preset.
 python scripts/calibrate_policy.py \
-    --cal-file bench-data/spml-cal.jsonl --eval-file bench-data/spml-test.jsonl \
+    --data-dir bench-data --cal-target balanced \
+    --eval-file bench-data/slp-cal.jsonl bench-data/pi-test.jsonl \
     --weights /kaggle/working/weights/bge-final.json \
-    --out /kaggle/working/calibrated-policy.json
+    --out /kaggle/working/calibrated-policy-balanced.json
+python scripts/calibrate_policy.py \
+    --data-dir bench-data --cal-target high-recall \
+    --eval-file bench-data/spml-cal.jsonl bench-data/spml-test.jsonl \
+    --weights /kaggle/working/weights/bge-final.json \
+    --out /kaggle/working/calibrated-policy-highrecall.json
 
 # 5) layer ablation, figures, error analysis, final report
 python scripts/run_ablation.py --weights /kaggle/working/weights/bge-final.json \

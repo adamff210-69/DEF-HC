@@ -1,4 +1,4 @@
-"""Error analysis over frozen-evaluation score files (spec Phase 19).
+"""Error analysis over development-test score files (spec Phase 19).
 
 Reads ``scores-*.jsonl`` artifacts, buckets FP/FN examples into documented
 categories with deterministic keyword heuristics, and writes
@@ -70,7 +70,7 @@ def main() -> int:
                     help="e.g. reports/error-analysis.md")
     args = ap.parse_args()
 
-    parts = ["# Error analysis (frozen evaluations)\n",
+    parts = ["# Error analysis (development-test evaluations,\n"           "# development_test_previously_observed)\n",
              "Labels are those of the source benchmarks and are never "
              "relabelled; suspected annotation issues are listed, not fixed.\n"]
     for path in args.scores:

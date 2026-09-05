@@ -13,8 +13,8 @@ Layout expected in --data-dir:
     spml-train.jsonl spml-cal.jsonl spml-test.jsonl   (full SPML schema)
     foreign-*.jsonl  (optional)
 
-No target performance may be achieved: whatever the frozen protocol yields
-on test IS the result.
+No target performance may be achieved: whatever the predeclared protocol yields
+on the development-test split (development_test_previously_observed) IS the result.
 """
 
 from __future__ import annotations
@@ -41,6 +41,30 @@ from defend_hc2.modeling import (
 )
 
 BATCH = 256
+
+# Exp-F recovery MUST go through the production scoring surfaces imported
+# from defend_hc2 — never an inline reimplementation (spec BUG-A / Step 2b).
+from defend_hc2.content_risk import ContentRiskAnalyzer, combine_signals
+from defend_hc2.normalize import variants  # noqa: F401  (re-export for tests/spies)
+
+PI_TEST_LABEL = "pi-test (development_test_previously_observed)"
+SPML_TEST_LABEL = "spml-test (development_test_previously_observed)"
+
+
+def recovery_risk_for_text(analyzer, text: str) -> float:
+    """Exp-F recovery = PRODUCTION fused scoring of one (perturbed) text.
+
+    ml = max-over-variant-views embedding probability (production
+    ContentRiskAnalyzer.variant_max_ml_score); lex = production variant-aware
+    lexical scan; risk = production combine_signals.  Two production calls
+    plus the production fusion — nothing reimplemented here.
+    """
+    ml, _ = analyzer.variant_max_ml_score(text)
+    lex, _ = ContentRiskAnalyzer.lexical_scan(text)
+    return combine_signals({
+        "injection": ml, "lexical": lex,
+        "retrieval": None, "mismatch": None, "drift": None,
+    })
 
 
 def embed_texts(model, texts):
@@ -113,9 +137,9 @@ def main() -> int:
     thr_a = calibrate_thresholds([y for _, y in slp_cal], probs(Xcal, fit_a))
     print(f"  thresholds (cal): {thr_a}")
     rep_a = evaluate("exp-a", fit_a, thr_a, key, Xte, [y for _, y in pi_test], out,
-                     [t for t, _ in pi_test], ["pi-test"])
+                     [t for t, _ in pi_test], [PI_TEST_LABEL])
 
-    # ---- EXP-B: zero-shot frozen model on foreign corpora ----------------
+    # ---- EXP-B: zero-shot pre-fitted (no-test-contact) model on foreign corpora -
     if not args.skip_bc:
         print("\n== EXP-B zero-shot (Exp-A model + Exp-A calibration, no retraining) ==")
         for foreign in sorted(args.data_dir.glob("foreign-*.jsonl")):
@@ -151,41 +175,72 @@ def main() -> int:
             thr_c = calibrate_thresholds(yc, probs(Xc, fit_c))
             print(f"  [Exp-C/{variant}] thresholds: {thr_c}")
             evaluate(f"exp-c-{variant}-slp", fit_c, thr_c, key, Xte, [y for _, y in pi_test],
-                     out, [t for t, _ in pi_test], ["pi-test"])
+                     out, [t for t, _ in pi_test], [PI_TEST_LABEL])
             evaluate(f"exp-c-{variant}-spml", fit_c, thr_c, key, Xspml_te,
-                     [y for _, y in spml_test], out, [t for t, _ in spml_test], ["spml-test"])
+                     [y for _, y in spml_test], out, [t for t, _ in spml_test], [SPML_TEST_LABEL])
         print(f"  delta vs Exp-A on S-Labs AUC: recorded per-file "
               f"(Exp-A {rep_a['roc_auc']})")
 
-    # ---- EXP-F: perturbation robustness on Exp-A S-Labs test -------------
-    print("\n== EXP-F obfuscation robustness (held-out S-Labs test) ==")
-    from defend_hc2.content_risk import ContentRiskAnalyzer, combine_signals
+    # ---- EXP-F: perturbation robustness on Exp-A S-Labs development test -
+    print("\n== EXP-F obfuscation robustness "
+          "(S-Labs test, development_test_previously_observed) ==")
 
-    lexical_layer = ContentRiskAnalyzer(demo_mode=True)
+    # Exp-A fitted weights written in the mandated JSON schema so the
+    # recovery path runs the PRODUCTION ContentRiskAnalyzer with the very
+    # parameters Exp-A evaluated (BUG-A: no inline reimplementation).
+    weights_exp_a = out / "weights-exp-a.json"
+    weights_exp_a.write_text(json.dumps({
+        "weights": fit_a["weights"], "bias": fit_a["bias"],
+        "threshold": thr_a[key], "dims": len(fit_a["weights"]),
+        "model": args.model,
+    }))
+    analyzer_f = ContentRiskAnalyzer(demo_mode=False, weights_path=weights_exp_a)
+
     rob = {"clean": rep_a, "recovery_note":
-           "recovery = fused(raw-ML score, variant-aware lexical) AUC — "
-           "threshold-free proxy for what the normalization layer restores",
-           "per_transform": {}}
+           "recovery = combine_signals(injection=variant_max_ml_score(text), "
+           "lexical=lexical_scan(text)) — production defend_hc2 calls only; "
+           "threshold-free AUC", "per_transform": {}}
     for name, fn in TRANSFORMS.items():
         perturbed = [(fn(t), y) for t, y in pi_test]
+        # BUG-B: row alignment is a hard invariant after perturbation.
+        assert len(perturbed) == len(pi_test), (
+            f"length mismatch after {name}: {len(perturbed)} texts vs "
+            f"{len(pi_test)} labels")
+        assert all(t is not None for t, _ in perturbed), (
+            f"transform {name} returned None for some row")
+        assert [y for _, y in perturbed] == [y for _, y in pi_test], (
+            f"transform {name} reordered rows")
         try:
             Xp = embed_texts(embedder, [t for t, _ in perturbed])
+            assert len(Xp) == len(pi_test), (
+                f"embedding length mismatch after {name}")
             rep_p = evaluate(f"exp-f-{name}", fit_a, thr_a, key, Xp,
                              [y for _, y in pi_test], out,
-                             [t for t, _ in perturbed], ["pi-test", f"perturb:{name}"])
-            p_ml = probs(Xp, fit_a)
-            lex_p = [lexical_layer.lexical_scan(t)[0] for t, _ in perturbed]
-            fused = [combine_signals({"injection": ml, "lexical": lx,
-                                      "retrieval": None, "mismatch": None, "drift": None})
-                     for ml, lx in zip(p_ml, lex_p)]
-            rec_auc = roc_auc([y for _, y in pi_test], fused)
-            print(f"    recovery (fused ML+variant-lexical) AUC: {rec_auc}")
+                             [t for t, _ in perturbed],
+                             [PI_TEST_LABEL, f"perturb:{name}"])
+            # ---- recovery: production variant-max ML + variant lexical ---
+            risks = [recovery_risk_for_text(analyzer_f, t) for t, _ in perturbed]
+            rec_auc = roc_auc([y for _, y in pi_test], risks)
+            print(f"    recovery (production fused scoring) AUC: {rec_auc}")
             rob["per_transform"][name] = {
                 "perturbed_f1": rep_p["f1"], "perturbed_recall": rep_p["recall"],
                 "absolute_degradation_f1": round(rep_a["f1"] - rep_p["f1"], 4),
                 "clean_auc": rep_a["roc_auc"], "perturbed_auc": rep_p["roc_auc"],
                 "recovery_auc": rec_auc,
             }
+            # Sub-0.5 AUC: treat as pipeline anomaly — dump raw examples
+            # (text_before, text_after, label, score) instead of averaging.
+            if (rep_p["roc_auc"] or 1.0) < 0.5:
+                dump = out / f"exp-f-{name}-examples.jsonl"
+                with dump.open("w", encoding="utf-8") as fh:
+                    for (t0, y0), (t1, _), risk in zip(pi_test, perturbed, risks):
+                        fh.write(json.dumps({
+                            "text_before": t0[:400], "text_after": t1[:400],
+                            "label": y0, "recovery_risk": risk,
+                        }) + "\n")
+                print(f"    WARNING: {name} AUC {rep_p['roc_auc']} < 0.5 — "
+                      f"scores anti-correlated; dumped {len(risks)} examples "
+                      f"to {dump.name}")
         except Exception as exc:
             print(f"  transform {name} failed: {exc} (recorded, continuing)")
             rob["per_transform"][name] = {"error": str(exc)[:160]}

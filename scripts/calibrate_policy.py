@@ -5,7 +5,9 @@ Classifier calibration ≠ policy calibration: this script runs the full
 channel value + fused risk + action, sweeps the candidate band grid with a
 **predeclared objective** (default: maximize detection precision subject to
 detection recall >= target, with benign FPR reported for every candidate),
-selects one frozen policy, and THEN evaluates it once on frozen test data.
+selects one predeclared policy, and THEN evaluates it once on the
+development-test split (development_test_previously_observed — inspected
+during development; not a blind holdout).
 
 For SPML rows the ``system_prompt`` field is honoured — one engine session
 per distinct system prompt, so context-dependent channels stay honest.
@@ -127,13 +129,32 @@ def run_rows(engine, rows: list[dict]) -> list[dict]:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--cal-file", type=Path, nargs="+", required=True)
+    p.add_argument("--data-dir", type=Path, default=Path("bench-data"),
+                   help="layout dir used by --cal-target presets")
+    p.add_argument("--cal-target", choices=["balanced", "high-recall"],
+                   default="balanced",
+                   help="calibration regime (FLAW-3): 'balanced' selects "
+                        "slp-cal.jsonl (~50%% injection → FPR-controlled "
+                        "policy for S-Labs-like traffic); 'high-recall' "
+                        "selects spml-cal.jsonl (~78%% injection → "
+                        "aggressive policy for high-attack-rate traffic). "
+                        "Ignored when --cal-file is given explicitly.")
+    p.add_argument("--cal-file", type=Path, nargs="+", default=None,
+                   help="override: explicit calibration file(s); wins over "
+                        "--cal-target")
     p.add_argument("--eval-file", type=Path, nargs="+", default=None)
     p.add_argument("--weights", type=Path, required=True)
     p.add_argument("--target-recall", type=float, default=0.95,
                    help="predeclared objective constraint")
     p.add_argument("--out", type=Path, default=Path("calibrated-policy.json"))
     args = p.parse_args()
+
+    if args.cal_file is None:
+        preset = {"balanced": "slp-cal.jsonl", "high-recall": "spml-cal.jsonl"}[
+            args.cal_target]
+        args.cal_file = [args.data_dir / preset]
+        print(f"--cal-target {args.cal_target}: calibrating on "
+              f"{args.cal_file[0]} (explicit --cal-file would override)")
 
     import os
     import tempfile
@@ -166,10 +187,14 @@ def main() -> int:
     print(f"calibration: {result['note']}")
     print(f"calibration metrics: {result['metrics']}")
 
+    cal_base_rate = round(sum(cal_gold) / max(len(cal_gold), 1), 4)
     out = {
         "policy": {"sanitize_at": bands[0], "quarantine_at": bands[1], "reject_at": bands[2]},
-        "origin": "calibration data only; frozen before any test evaluation",
+        "origin": "calibration data only; bands predeclared before evaluation",
         "objective": f"max precision s.t. recall >= {args.target_recall}",
+        "calibration": {"target": args.cal_target,
+                        "files": [str(fp) for fp in args.cal_file],
+                        "base_rate": cal_base_rate},
         "calibration_metrics": result["metrics"],
         "environment": environment_block(),
         "git_commit": git_commit(Path(__file__).resolve().parents[1]),
@@ -189,9 +214,16 @@ def main() -> int:
                                      sanitize_at=bands[0])
         test_trace = run_rows(engine, test_rows)
         test_actions = [t["action"] for t in test_trace]
-        out["frozen_policy_test_metrics"] = detection_metrics(
+        # BUG-E: these evaluation files were observed during development —
+        # they are development-test metrics, never a blind final holdout.
+        out["policy_eval_metrics"] = detection_metrics(
             [t["gold"] for t in test_trace], test_actions)
-        print(f"\nfrozen policy on test (evaluated ONCE): {out['frozen_policy_test_metrics']}")
+        out["policy_eval_claim"] = (
+            "development_test_previously_observed — evaluated once with "
+            "predeclared bands, but the files were inspected during "
+            "development; not a blind holdout")
+        print(f"\npolicy on development test (evaluated ONCE, previously "
+              f"observed): {out['policy_eval_metrics']}")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(out, indent=2))

@@ -1,8 +1,13 @@
 """Aggregate every evaluation artifact into the spec's FINAL REPORT format.
 
-Reads what exists under an artifacts directory and prints the mandated
+Reads what exists under an artifacts directory (experiments under
+``--exp-dir``, default ``<artifacts>/bench-out``) and prints the mandated
 ``DEF-HC2 FINAL EVALUATION`` block; any missing experiment is reported as
 ``n/a`` honestly — sections are never fabricated.
+
+Every metric derived from pi-test.jsonl or any SPML test split is labeled
+``development_test_previously_observed`` (BUG-E): those files were
+inspected during development iterations; no blind final holdout exists.
 """
 
 from __future__ import annotations
@@ -14,6 +19,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # allow bare run
+
+HONESTY_PARAGRAPH = (
+    "No genuinely blind final holdout currently exists. All metrics in this\n"
+    "report are development/post-hoc estimates. A true final claim requires a\n"
+    "dataset never previously inspected in this project."
+)
+
+_DEV_LABEL = "development_test_previously_observed"
 
 
 def _j(path: Path):
@@ -35,13 +48,44 @@ def _fmt_metrics(m: dict | None, indent: str) -> list[str]:
     return lines
 
 
+def _fmt_exp_f(rob: dict, indent: str = "      ") -> list[str]:
+    """Obfuscation table (BUG-D/Step 6): clean vs perturbed vs recovery,
+    with an explicit anti-correlation warning for any sub-0.5 AUC."""
+    clean = (rob.get("clean") or {}).get("roc_auc")
+    lines = [f"{indent}clean AUC: {clean}",
+             f"{indent}{'transform':<14}{'perturbed AUC':>14}{'recovery AUC':>14}"]
+    for name, row in sorted((rob.get("per_transform") or {}).items()):
+        if not isinstance(row, dict) or "perturbed_auc" not in row:
+            lines.append(f"{indent}{name:<14}{'n/a':>14}{'n/a':>14}")
+            continue
+        lines.append(f"{indent}{name:<14}{row.get('perturbed_auc')!s:>14}"
+                     f"{row.get('recovery_auc')!s:>14}")
+        p_auc = row.get("perturbed_auc")
+        if isinstance(p_auc, (int, float)) and p_auc < 0.5:
+            lines.append(
+                f"{indent}WARNING: {name} AUC {p_auc} < 0.5 — scores "
+                f"anti-correlated with labels; treat as a pipeline bug until "
+                f"fixed, not a robustness result.")
+        r_auc = row.get("recovery_auc")
+        if isinstance(r_auc, (int, float)) and r_auc < 0.5:
+            lines.append(
+                f"{indent}WARNING: {name} recovery AUC {r_auc} < 0.5 — "
+                f"remaining anti-correlated gap after normalization; see "
+                f"per-example dump exp-f-{name}-examples.jsonl.")
+    return lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--artifacts", type=Path, required=True,
-                    help="dir containing bench-metrics-*.json, scores-*.jsonl, weights/")
+                    help="dir containing scores-*.jsonl, weights/, calibrated-policy.json")
+    ap.add_argument("--exp-dir", type=Path, default=None,
+                    help="dir containing bench-metrics-exp-*.json "
+                         "(default <artifacts>/bench-out)")
     ap.add_argument("--repo", type=Path, default=Path("."))
     args = ap.parse_args()
     art = args.artifacts
+    exp_dir = args.exp_dir if args.exp_dir else art / "bench-out"
 
     out = ["DEF-HC2 FINAL EVALUATION", "========================", ""]
     out += ["Code:"]
@@ -53,11 +97,15 @@ def main() -> int:
     out += [f"    git commit: {commit}",
             "    tests: see pytest output in the run log (not parsed here)", ""]
 
-    exp_files = sorted(art.rglob("bench-metrics-exp-*.json"))
-    out += ["Experiments:"]
+    exp_files = sorted(exp_dir.glob("bench-metrics-exp-*.json"))
+    out += [f"Experiments: (from {exp_dir})"]
     for f in exp_files:
-        out.append(f"  {f.stem}:")
-        out += _fmt_metrics(_j(f), "      ")
+        blob = _j(f)
+        out.append(f"  {f.stem}:  [{_DEV_LABEL}]")
+        if f.stem == "bench-metrics-exp-f" and isinstance(blob, dict):
+            out += _fmt_exp_f(blob)
+        else:
+            out += _fmt_metrics(blob, "      ")
     if not exp_files:
         out.append("  (no exp metrics found — run scripts/run_experiments.py)")
     out.append("")
@@ -66,14 +114,19 @@ def main() -> int:
     out += ["Policy:"]
     if pol:
         p = pol["policy"]
+        eval_metrics = (pol.get("policy_eval_metrics")
+                        or pol.get("frozen_policy_test_metrics"))
         out += [f"    sanitize: {p['sanitize_at']}  quarantine: {p['quarantine_at']}  "
                 f"reject: {p['reject_at']}",
                 f"    origin: {pol.get('origin')}",
+                f"    calibration: {pol.get('calibration')}",
                 f"    calibration metrics: {pol.get('calibration_metrics')}",
-                f"    frozen test metrics: {pol.get('frozen_policy_test_metrics')}"]
+                f"    development test metrics [{_DEV_LABEL}]: {eval_metrics}"]
     else:
         out.append("    n/a (run scripts/calibrate_policy.py)")
     out.append("")
+
+    out += ["Labeling honesty (BUG-E):", f"    {HONESTY_PARAGRAPH}", ""]
 
     out += ["Artifacts:"]
     for pattern in ("weights/*.json", "*.jsonl", "*.png", "*.tar.gz"):

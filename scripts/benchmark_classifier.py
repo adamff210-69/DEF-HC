@@ -232,7 +232,7 @@ def main() -> int:
         y_test, [0.0] * len(y_test), 0.5)
 
     # ------------------------------------------------------------ outputs
-    print("\n== held-out test metrics (calibration-derived thresholds) ==")
+    print("\n== development-test metrics (development_test_previously_observed; calibration-derived thresholds) ==")
     for name, m in results.items():
         if isinstance(m, dict) and "f1" in m:
             tag = "  [TEST-ORACLE]" if ORACLE in name else \
