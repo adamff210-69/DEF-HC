@@ -79,9 +79,10 @@ def group_stratified_split(
         return sum(1 for i in indices if rows[i][label_field])
 
     fr = [f / sum(fractions) for f in fractions]
-    buckets: list[list[int]] = [[], [], []]
-    counts = [0, 0, 0]
-    pos_counts = [0, 0, 0]
+    k = len(fr)
+    buckets: list[list[int]] = [[] for _ in range(k)]
+    counts = [0] * k
+    pos_counts = [0] * k
     total = len(rows)
     total_pos = pos_of(list(range(total)))
     for gid, idx in groups:
@@ -90,7 +91,7 @@ def group_stratified_split(
         def deficit(b: int) -> float:
             return fr[b] * total - counts[b]
 
-        best = max(range(3), key=lambda b: (deficit(b),
+        best = max(range(k), key=lambda b: (deficit(b),
                                             fr[b] * total_pos - pos_counts[b]))
         buckets[best].extend(idx)
         counts[best] += len(idx)
