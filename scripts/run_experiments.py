@@ -185,6 +185,15 @@ def main() -> int:
     print("\n== EXP-F obfuscation robustness "
           "(S-Labs test, development_test_previously_observed) ==")
 
+    # Exp-F self-cleans: transforms are renamed occasionally (e.g. the
+    # whitespace split); stale per-transform artifacts from earlier runs
+    # would silently print as if current.
+    for stale in list(out.glob("bench-metrics-exp-f-*.json")) + \
+            list(out.glob("exp-f-*-examples.jsonl")) + \
+            [out / "scores-exp-f.jsonl", out / "bench-metrics-exp-f.json"]:
+        if stale.exists():
+            stale.unlink()
+
     # Exp-A fitted weights written in the mandated JSON schema so the
     # recovery path runs the PRODUCTION ContentRiskAnalyzer with the very
     # parameters Exp-A evaluated (BUG-A: no inline reimplementation).

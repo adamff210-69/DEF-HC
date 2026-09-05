@@ -77,9 +77,10 @@ production analyzer runs — never an inline reimplementation.
 | zero-width | 0.9876 | 0.9876 | 0.9876 |
 | casing | 0.9876 | 0.9876 | 0.9877 |
 | delimiter | 0.9876 | 0.9845 | 0.9845 |
+| word whitespace (2–4 spaces; word grid) | 0.9876 | 0.9876 | 0.9877 |
 | **leetspeak** | 0.9876 | **0.3516** | **0.9878** |
 | **base64 whole-message wrap** | 0.9876 | **0.3781** | **0.9877** |
-| **whitespace (letter-fragmented)** | 0.9876 | **0.4382** | **0.4383** |
+| **letter-spacing (every char fragmented)** | 0.9876 | **0.4382** | **0.4383** |
 
 **The headline robustness finding, stated precisely.** Character-level
 obfuscation defeats the raw embedding pass (AUC .99 → .35–.44; sub-0.5 is
@@ -88,16 +89,21 @@ treated in-repo as a pipeline signal with forced per-example dumps, not
 normalization layer recovers the FULL clean discrimination (recovery
 ≈ .988) because the fold/decode view restores the original prose into the
 classifier's embedding region — verified on production scoring calls
-only.  **Letter-fragmentation ("i g n o r e …") is the one remaining
-real gap**: the despaced collapse feeds the literal phrase inventory only
-and is never embedded (embedding glued text re-compressed class
-separation inside max() — measured benign inj 0.80 vs attack 0.85);
+only.  The legacy pooled `whitespace` transform was split (it had
+blended a 0.99 in-distribution success with a 0.44 OOD failure):
+word-grid spacing is fully tolerated, while **extreme letter-spacing is
+the one remaining real gap**: the despaced collapse feeds the literal
+phrase inventory only and is never embedded (embedding glued text
+re-compressed class separation inside max() — measured benign inj 0.80
+vs attack 0.85; the FIX-1 production gate now pins benign mean recovery
+risk < 0.30, measured 0.113), so recovery is bounded by literal phrase
+coverage and stays flat.
 
-recovery is therefore bounded by literal phrase coverage and stays flat.
-The gap ships with a WARNING line in the final report and a full
-2,101-example (text_before, text_after, label, score) dump in the
-artifact bundle; mitigation direction: a despaced-view cross-encoder
-reranker or a despace-tolerant embedding — out of scope, documented.
+The gap ships with a WARNING line and a design-limit note in the final
+report and a full 2,101-example (text_before, text_after, label, score)
+dump in the artifact bundle; mitigation direction: a despaced-view
+cross-encoder reranker, a despace-tolerant embedding, or train-time
+letter-spacing augmentation — out of scope, documented.
 
 **Provenance notes.** (i) An earlier Exp-F run reported flat recovery
 partly because the leetspeak probe was non-invertible (`l→1` folds back
