@@ -37,6 +37,7 @@ from defend_hc2.modeling import (
     git_commit,
     load_jsonl,
     remove_overlap,
+    roc_auc,
 )
 
 BATCH = 256
@@ -85,6 +86,8 @@ def main() -> int:
     ap.add_argument("--model", default="BAAI/bge-small-en-v1.5")
     ap.add_argument("--target-recall", type=float, default=0.95,
                     help="deployment criterion declared BEFORE test")
+    ap.add_argument("--skip-bc", action="store_true",
+                    help="re-run only Exp-A + Exp-F (Exp-F depends on A's fit)")
     args = ap.parse_args()
     out = args.out_dir
     out.mkdir(parents=True, exist_ok=True)
@@ -113,46 +116,56 @@ def main() -> int:
                      [t for t, _ in pi_test], ["pi-test"])
 
     # ---- EXP-B: zero-shot frozen model on foreign corpora ----------------
-    print("\n== EXP-B zero-shot (Exp-A model + Exp-A calibration, no retraining) ==")
-    for foreign in sorted(args.data_dir.glob("foreign-*.jsonl")):
-        rows = load(foreign.name)
-        rows, removed = remove_overlap(rows, slp_tr, slp_cal)
-        print(f"  {foreign.name}: {len(rows)} rows (+{removed} overlap-removed)")
-        if not rows:
-            print("  skipped — empty after overlap removal")
-            continue
-        Xf = embed_texts(embedder, [t for t, _ in rows])
-        evaluate(f"exp-b-{foreign.stem.replace('foreign-', '')}", fit_a, thr_a, key,
-                 Xf, [y for _, y in rows], out, [t for t, _ in rows], [foreign.name])
+    if not args.skip_bc:
+        print("\n== EXP-B zero-shot (Exp-A model + Exp-A calibration, no retraining) ==")
+        for foreign in sorted(args.data_dir.glob("foreign-*.jsonl")):
+            rows = load(foreign.name)
+            rows, removed = remove_overlap(rows, slp_tr, slp_cal)
+            print(f"  {foreign.name}: {len(rows)} rows (+{removed} overlap-removed)")
+            if not rows:
+                print("  skipped — empty after overlap removal")
+                continue
+            Xf = embed_texts(embedder, [t for t, _ in rows])
+            evaluate(f"exp-b-{foreign.stem.replace('foreign-', '')}", fit_a, thr_a, key,
+                     Xf, [y for _, y in rows], out, [t for t, _ in rows], [foreign.name])
 
+    if args.skip_bc:
+        print("\n(skipping Exp-B/C per --skip-bc)")
     # ---- EXP-C: mixed-source training ------------------------------------
-    print("\n== EXP-C mixed-source (S-Labs train + SPML train) ==")
-    spml_tr, spml_cal, spml_test = (load("spml-train.jsonl"), load("spml-cal.jsonl"),
-                                    load("spml-test.jsonl"))
-    mix_tr = slp_tr + spml_tr
-    mix_cal_c1 = slp_cal                       # C1: deployment-matched
-    mix_cal_c2 = slp_cal + spml_cal            # C2: combined
-    Xmix_tr = embed_texts(embedder, [t for t, _ in mix_tr])
-    y_mix_tr = [y for _, y in mix_tr]
-    Xslp_cal = Xcal
-    Xspml_cal = embed_texts(embedder, [t for t, _ in spml_cal])
-    Xspml_te = embed_texts(embedder, [t for t, _ in spml_test])
-    for variant, (Xc, yc) in {"c1": (Xslp_cal, [y for _, y in slp_cal]),
-                              "c2": (np.concatenate([Xslp_cal, Xspml_cal]),
-                                     [y for _, y in slp_cal] + [y for _, y in spml_cal])}.items():
-        fit_c = fit_classifier(Xmix_tr, y_mix_tr, Xc, yc, seed=42)
-        thr_c = calibrate_thresholds(yc, probs(Xc, fit_c))
-        print(f"  [Exp-C/{variant}] thresholds: {thr_c}")
-        evaluate(f"exp-c-{variant}-slp", fit_c, thr_c, key, Xte, [y for _, y in pi_test],
-                 out, [t for t, _ in pi_test], ["pi-test"])
-        evaluate(f"exp-c-{variant}-spml", fit_c, thr_c, key, Xspml_te,
-                 [y for _, y in spml_test], out, [t for t, _ in spml_test], ["spml-test"])
-    print(f"  delta vs Exp-A on S-Labs AUC: recorded per-file "
-          f"(Exp-A {rep_a['roc_auc']})")
+    if not args.skip_bc:
+        print("\n== EXP-C mixed-source (S-Labs train + SPML train) ==")
+        spml_tr, spml_cal, spml_test = (load("spml-train.jsonl"), load("spml-cal.jsonl"),
+                                        load("spml-test.jsonl"))
+        mix_tr = slp_tr + spml_tr
+        mix_cal_c1 = slp_cal                       # C1: deployment-matched
+        mix_cal_c2 = slp_cal + spml_cal            # C2: combined
+        Xmix_tr = embed_texts(embedder, [t for t, _ in mix_tr])
+        y_mix_tr = [y for _, y in mix_tr]
+        Xslp_cal = Xcal
+        Xspml_cal = embed_texts(embedder, [t for t, _ in spml_cal])
+        Xspml_te = embed_texts(embedder, [t for t, _ in spml_test])
+        for variant, (Xc, yc) in {"c1": (Xslp_cal, [y for _, y in slp_cal]),
+                                  "c2": (np.concatenate([Xslp_cal, Xspml_cal]),
+                                         [y for _, y in slp_cal] + [y for _, y in spml_cal])}.items():
+            fit_c = fit_classifier(Xmix_tr, y_mix_tr, Xc, yc, seed=42)
+            thr_c = calibrate_thresholds(yc, probs(Xc, fit_c))
+            print(f"  [Exp-C/{variant}] thresholds: {thr_c}")
+            evaluate(f"exp-c-{variant}-slp", fit_c, thr_c, key, Xte, [y for _, y in pi_test],
+                     out, [t for t, _ in pi_test], ["pi-test"])
+            evaluate(f"exp-c-{variant}-spml", fit_c, thr_c, key, Xspml_te,
+                     [y for _, y in spml_test], out, [t for t, _ in spml_test], ["spml-test"])
+        print(f"  delta vs Exp-A on S-Labs AUC: recorded per-file "
+              f"(Exp-A {rep_a['roc_auc']})")
 
     # ---- EXP-F: perturbation robustness on Exp-A S-Labs test -------------
     print("\n== EXP-F obfuscation robustness (held-out S-Labs test) ==")
-    rob = {"clean": rep_a, "per_transform": {}}
+    from defend_hc2.content_risk import ContentRiskAnalyzer, combine_signals
+
+    lexical_layer = ContentRiskAnalyzer(demo_mode=True)
+    rob = {"clean": rep_a, "recovery_note":
+           "recovery = fused(raw-ML score, variant-aware lexical) AUC — "
+           "threshold-free proxy for what the normalization layer restores",
+           "per_transform": {}}
     for name, fn in TRANSFORMS.items():
         perturbed = [(fn(t), y) for t, y in pi_test]
         try:
@@ -160,9 +173,18 @@ def main() -> int:
             rep_p = evaluate(f"exp-f-{name}", fit_a, thr_a, key, Xp,
                              [y for _, y in pi_test], out,
                              [t for t, _ in perturbed], ["pi-test", f"perturb:{name}"])
+            p_ml = probs(Xp, fit_a)
+            lex_p = [lexical_layer.lexical_scan(t)[0] for t, _ in perturbed]
+            fused = [combine_signals({"injection": ml, "lexical": lx,
+                                      "retrieval": None, "mismatch": None, "drift": None})
+                     for ml, lx in zip(p_ml, lex_p)]
+            rec_auc = roc_auc([y for _, y in pi_test], fused)
+            print(f"    recovery (fused ML+variant-lexical) AUC: {rec_auc}")
             rob["per_transform"][name] = {
                 "perturbed_f1": rep_p["f1"], "perturbed_recall": rep_p["recall"],
                 "absolute_degradation_f1": round(rep_a["f1"] - rep_p["f1"], 4),
+                "clean_auc": rep_a["roc_auc"], "perturbed_auc": rep_p["roc_auc"],
+                "recovery_auc": rec_auc,
             }
         except Exception as exc:
             print(f"  transform {name} failed: {exc} (recorded, continuing)")
