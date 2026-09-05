@@ -110,18 +110,23 @@ def main() -> int:
         out.append("  (no exp metrics found — run scripts/run_experiments.py)")
     out.append("")
 
-    pol = _j(art / "calibrated-policy.json") if (art / "calibrated-policy.json").exists() else None
+    pol_files = sorted(art.glob("calibrated-policy*.json"))
     out += ["Policy:"]
-    if pol:
-        p = pol["policy"]
-        eval_metrics = (pol.get("policy_eval_metrics")
-                        or pol.get("frozen_policy_test_metrics"))
-        out += [f"    sanitize: {p['sanitize_at']}  quarantine: {p['quarantine_at']}  "
-                f"reject: {p['reject_at']}",
-                f"    origin: {pol.get('origin')}",
-                f"    calibration: {pol.get('calibration')}",
-                f"    calibration metrics: {pol.get('calibration_metrics')}",
-                f"    development test metrics [{_DEV_LABEL}]: {eval_metrics}"]
+    if pol_files:
+        for fp in pol_files:
+            pol = _j(fp)
+            if not isinstance(pol, dict) or "policy" not in pol:
+                continue
+            p = pol["policy"]
+            eval_metrics = (pol.get("policy_eval_metrics")
+                            or pol.get("frozen_policy_test_metrics"))
+            out += [f"  {fp.name}:",
+                    f"    sanitize: {p['sanitize_at']}  quarantine: {p['quarantine_at']}  "
+                    f"reject: {p['reject_at']}",
+                    f"    origin: {pol.get('origin')}",
+                    f"    calibration: {pol.get('calibration')}",
+                    f"    calibration metrics: {pol.get('calibration_metrics')}",
+                    f"    development test metrics [{_DEV_LABEL}]: {eval_metrics}"]
     else:
         out.append("    n/a (run scripts/calibrate_policy.py)")
     out.append("")

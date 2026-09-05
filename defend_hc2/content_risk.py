@@ -376,16 +376,24 @@ class ContentRiskAnalyzer:
         """Production ML scoring: p(injection) = MAX over variant views.
 
         The embedding classifier scores the raw text AND every distinct
-        normalization view (normalized / folded / despaced / decoded b64),
-        so an obfuscated attack that maps back to clean attack text in any
-        view is caught (spec Step 2a — FLAW-1).  Bounded by ``max_views``
-        (variant inventory itself is hard-bounded in normalize.py).
+        normalization view that stays *in-distribution for the embedder*
+        (normalized / folded / decoded b64) — views whose text is real prose
+        again after unobfuscation (spec Step 2a — FLAW-1).
+
+        The ``despaced`` view is deliberately EXCLUDED here: glued text is
+        legitimate input only for the literal phrase inventory in
+        ``lexical_scan``.  Embedding glue is out-of-distribution — benign
+        prose scores comparably to attack glue, compressing class separation
+        inside the max() and wrecking both FPR and recovery AUC (measured
+        on the dev-test: benign inj 0.80 vs attack 0.85 with glue included).
         """
         if self.demo_mode or self._model is None or not self._clf_weights:
             raise RuntimeError("variant_max_ml_score requires trained ML mode")
         text = Canonicalizer.normalize_text(text)
         views: list[str] = []
-        for v in _norm.variants(text).values():
+        for tag, v in _norm.variants(text).items():
+            if tag == "despaced":  # literal-scan-only view, not for embedding
+                continue
             if v not in views:
                 views.append(v)
             if len(views) >= max_views:

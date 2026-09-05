@@ -25,11 +25,11 @@ from typing import Final
 # ------------------------------------------------------------------ limits
 MAX_INPUT_CHARS: Final = 8192
 # Whole-message Base64 wraps of realistic prompts (system-prompt-style rows
-# commonly run 1-3 KB) must still decode — Exp-F diagnosis showed 1024/512
+# commonly run 1-4.5 KB) must still decode — Exp-F diagnosis showed 1024/512
 # silently produced zero decoded variants for exactly those attacks.  Bounds
-# stay hard (worst case 4 variants × ~3 KB decode + printability scan).
-MAX_B64_TOKEN_CHARS: Final = 4096
-MAX_B64_DECODED_CHARS: Final = 3072
+# stay hard (worst case 4 variants × ~4.5 KB decode + printability scan).
+MAX_B64_TOKEN_CHARS: Final = 6144
+MAX_B64_DECODED_CHARS: Final = 4096
 MAX_B64_VARIANTS: Final = 4
 MIN_B64_TOKEN_CHARS: Final = 24
 
