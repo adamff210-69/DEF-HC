@@ -53,7 +53,7 @@ def main() -> int:
     out += [f"    git commit: {commit}",
             "    tests: see pytest output in the run log (not parsed here)", ""]
 
-    exp_files = sorted(art.glob("bench-metrics-exp-*.json"))
+    exp_files = sorted(art.rglob("bench-metrics-exp-*.json"))
     out += ["Experiments:"]
     for f in exp_files:
         out.append(f"  {f.stem}:")
