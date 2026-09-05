@@ -85,19 +85,30 @@ production analyzer runs — never an inline reimplementation.
 **The headline robustness finding, stated precisely.** Character-level
 obfuscation defeats the raw embedding pass (AUC .99 → .35–.44; sub-0.5 is
 treated in-repo as a pipeline signal with forced per-example dumps, not
-"a robustness score").  For leetspeak and whole-message base64, the
-normalization layer recovers the FULL clean discrimination (recovery
-≈ .988) because the fold/decode view restores the original prose into the
-classifier's embedding region — verified on production scoring calls
-only.  The legacy pooled `whitespace` transform was split (it had
-blended a 0.99 in-distribution success with a 0.44 OOD failure):
-word-grid spacing is fully tolerated, while **extreme letter-spacing is
-the one remaining real gap**: the despaced collapse feeds the literal
-phrase inventory only and is never embedded (embedding glued text
-re-compressed class separation inside max() — measured benign inj 0.80
-vs attack 0.85; the FIX-1 production gate now pins benign mean recovery
-risk < 0.30, measured 0.113), so recovery is bounded by literal phrase
-coverage and stays flat.
+"a robustness score").  The direction is NOT mere noise: the example
+dumps show a **systematic inversion** of the benign/attack ordering —
+mean raw-view score on the obfuscated dev-test rows is HIGHER for benign
+than for attack texts (leetspeak 0.974 vs 0.942, base64 0.979 vs 0.964,
+letter-spacing 0.971 vs 0.954; `bench-out/exp-f-*-examples.jsonl`, field
+`perturbed_score`).  Obfuscation moves benign prose into a region the
+encoder reads as adversarial while dissolving attack phrasing into
+inert-looking soup — which is precisely the architectural motivation for
+canonicalization-before-scoring (restoration views replace the junk raw
+view once unobfuscation exists), the mechanism whose recovery column
+tags these rows "Expected, not a defect."
+
+For leetspeak and whole-message base64, that mechanism recovers the FULL
+clean discrimination (recovery ≈ .988) because the fold/decode view
+restores the original prose into the classifier's embedding region —
+verified on production scoring calls only.  The legacy pooled
+`whitespace` transform was split (it had blended a 0.99 in-distribution
+success with a 0.44 OOD failure): word-grid spacing is fully tolerated,
+while **extreme letter-spacing is the one remaining real gap**: the
+despaced collapse feeds the literal phrase inventory only and is never
+embedded (embedding glued text re-compressed class separation inside
+max() — measured benign inj 0.80 vs attack 0.85; the FIX-1 production
+gate now pins benign mean recovery risk < 0.30, measured 0.113), so
+recovery is bounded by literal phrase coverage and stays flat.
 
 The gap ships with a WARNING line and a design-limit note in the final
 report and a full 2,101-example (text_before, text_after, label, score)
