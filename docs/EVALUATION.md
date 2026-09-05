@@ -1,15 +1,130 @@
 # Evaluation — DEF-HC Dual-Layer Defense
 
-> **Protocol note (post-consolidation):** sections 2–3 below record the
+> **This document now carries the strict-protocol results (generated
+> 2026-09-05 on Kaggle with the consolidated pipeline).** The v1 numbers
+> in §2–3 remain below as the motivating investigation, clearly attributed.
+> Where the two disagree, the strict-protocol figures are authoritative.
+
+## 0. Strict-protocol results (Kaggle, 2026-09-05)
+
+Protocol: sklearn classifier (C selected on calibration PR-AUC), seed 42,
+thresholds from calibration data only, S-Labs official splits preserved
+exactly, `pi-test` frozen until one final evaluation, duplicate/template
+groups prevented from crossing splits, git `58cefce`.
+
+### 0.1 Headline — final weights run (mixed S-Labs+SPML train, matched cal, t for recall 0.98)
+
+| Model | ROC-AUC | Precision | Recall | Balanced acc |
+|---|---|---|---|---|
+| embedding logistic (deployable) | 0.9851 | 0.8857 | **0.9628** | 0.9253 |
+| stacked meta | 0.9853 | 0.8857 | 0.9628 | 0.9253 |
+| lexical baseline (calibrated) | 0.5414 | 0.4746 | 1.0000 | 0.5000 |
+| demo-fusion baseline (calibrated) | 0.5446 | 0.4746 | 1.0000 | 0.5000 |
+| ORACLE embedding (test-only, not deployable) | 0.9851 | 0.9345 | 0.9395 | 0.9400 |
+
+The calibrated lexical/fusion baselines collapse onto the always-positive
+dummy (precision = base rate 0.4746, balanced accuracy 0.500) and are
+reported as such — the protocol exposes non-informative baselines instead
+of letting degenerate thresholds hide them.
+
+### 0.2 Exp-A: in-distribution (S-Labs official splits)
+
+AUC 0.9876 · P 0.9645 · **R 0.9039** @ t=0.5075 calibrated for recall 0.95.
+Cal→test transfer gap ≈ 4.6 recall points — a property of official-split
+distribution shift, documented since v1; the final weights run targets 0.98
+to compensate (delivers 0.9628).
+
+### 0.3 Exp-B: zero-shot foreign transfer (Exp-A model, frozen thresholds)
+
+| Corpus | AUC | Precision | Recall |
+|---|---|---|---|
+| foreign-deepset (n=116) | 0.8574 | 0.7206 | 0.8167 |
+| foreign-jailbreak-classification (n=262) | 0.9064 | 0.6751 | 0.9568 |
+| foreign-safe-guard | 0.9393 | 0.5887 | 0.9475 |
+
+Ranking quality survives transfer (AUC .86–.94); precision calibration does
+not — it must be recalibrated per domain. Per-dataset reporting only; never
+pooled.
+
+### 0.4 Exp-C: mixed-source training (S-Labs + SPML)
+
+Matched calibration (c1) vs pooled calibration (c2):
+
+| Variant | Dataset | AUC | P | R |
+|---|---|---|---|---|
+| c1 matched cal | S-Labs | 0.9848 | 0.9598 | 0.9096 |
+| c1 matched cal | SPML | 0.9965 | 0.9865 | 0.9880 |
+| c2 pooled cal | S-Labs | 0.9848 | 0.9853 | **0.8316** |
+| c2 pooled cal | SPML | 0.9965 | 0.9939 | 0.9717 |
+
+Mixed training costs −0.003 AUC on S-Labs vs Exp-A and is strong on SPML —
+but pooled calibration silently trades 7.8 recall points on S-Labs.
+**Calibration distribution must match deployment domain** (v1 doctrine,
+fully confirmed under the strict protocol).
+
+### 0.5 Exploitation robustness (Exp-F, held-out S-Labs test)
+
+Clean / perturbed / normalization-recovery = fused(raw-ML, variant-aware
+lexical) ROC-AUC per transform — threshold-free, so no calibration needed.
+
+| Transform | Clean | Perturbed | Recovery |
+|---|---|---|---|
+| zero-width | 0.9876 | 0.9876 | 0.9876 |
+| casing | 0.9876 | 0.9876 | 0.9877 |
+| delimiter | 0.9876 | 0.9845 | 0.9845 |
+| **leetspeak** | 0.9876 | **0.3516** | 0.3563 |
+| **whitespace (char-spaced)** | 0.9876 | **0.4382** | 0.4382 |
+| **base64 whole-message wrap** | 0.9876 | **0.3781** | 0.3830 |
+
+**The core vulnerability finding (reported as-is).** Character-level
+obfuscation defeats the embedder (AUC → .33–.44), and the normalization
+backup layer recovers almost nothing *on this corpus* — because the
+lexical pattern bank is near-uninformative on S-Labs phrasings in the
+first place (its clean-data AUC is 0.54; see §0.1). Mechanism verified:
+decoded variants exist (base64 whole-message wraps do decode after the
+MAX_B64 caps were raised 1024/512 → 4096/3072), fold restores canonical
+leet keywords (probe invertibility is regression-tested), but pattern
+hits are sparse. Recovery is strong on canonical-phrase attacks
+(local probes: fused AUC 1.0); it is weak precisely where the attacks are
+subtle. Remaining gaps, honestly open:
+
+- no char-spacing-collapse normalization view (whitespace recovery 0.44);
+- leet blindness is inherent to bge embeddings with no textual redundancy
+  for non-canonical phrasings.
+
+Mitigation direction: a despace variant (subject to FPR constraint) and
+adversarially-robust embedding augmentation. **Not fixed here — fixed
+by reporting.**
+
+### 0.6 Calibrated policy on frozen SPML test
+
+Predeclared bands (max precision s.t. recall ≥ 0.98 on calibration;
+frozen before the single test evaluation): **0.30 / 0.55 / 0.85**.
+
+| Split | Precision | Recall | Benign FPR | ALLOW / SANITIZE / QUARANTINE / REJECT |
+|---|---|---|---|---|
+| calibration (n=3,183) | 0.9873 | 0.9838 | 0.0491 | 661 / 80 / 1884 / 558 |
+| **frozen test (n=3,183)** | **0.9892** | **0.9844** | **0.0399** | 689 / 84 / 1869 / 541 |
+
+Cal→test transfer within ~1 point on every axis — predeclared
+calibration works when the calibration distribution matches deployment.
+
+**Provenance note.** An earlier Exp-F run reported flat recovery partly
+because the leetspeak probe was non-invertible (`l→1` folds back as `i`,
+scrambling e.g. "all"→"411"→"aii"). The probe was fixed and
+regression-pinned; the table above is post-fix, and the residual leet
+blindness is the true finding.
+
+---
+
+> **Protocol note (v1 attribution):** sections 2–3 below record the
 > *v1 protocol* numbers (single-corpus vs mixed training, calibration
 > doctrine). The consolidated hardening spec then changed the classifier
 > training (sklearn, C-on-calibration-PR-AUC), the fusion math (no-dilution
-> baseline), and the metric set; the **strict-protocol numbers must be
-> regenerated** with the pipeline in `docs/KAGGLE.md` §"Full evaluation
-> pipeline" (prepare → run_experiments → calibrate_policy). If the new,
-> leakage-free numbers fall below the v1 figures, the lower valid result is
-> the one to report (spec: non-negotiable rules). The v1 numbers stand as
-> the motivating investigation, clearly attributed.
+> baseline), and the metric set; the **strict-protocol numbers in §0
+> supersede them** (spec: report the lower-but-valid result over a tuned
+> one). The v1 numbers stand as the motivating investigation, clearly
+> attributed.
 
 ## 1. Setup
 
