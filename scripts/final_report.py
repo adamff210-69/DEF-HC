@@ -21,9 +21,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # allow bare run
 
 HONESTY_PARAGRAPH = (
-    "No genuinely blind final holdout currently exists. All metrics in this\n"
-    "report are development/post-hoc estimates. A true final claim requires a\n"
-    "dataset never previously inspected in this project."
+    "No genuinely blind private holdout currently exists. All metrics in\n"
+    "this report are development/post-hoc estimates. A true final claim\n"
+    "requires a dataset never previously inspected in this project. Public\n"
+    "benchmarks scored with zero prior project exposure (Exp-H) are\n"
+    "labeled external_public_not_blind, not 'blind'."
 )
 
 _DEV_LABEL = "development_test_previously_observed"
@@ -133,7 +135,7 @@ def main() -> int:
     out += [f"Experiments: (from {exp_dir})"]
     for f in exp_files:
         blob = _j(f)
-        out.append(f"  {f.stem}:  [{_DEV_LABEL}]")
+        out.append(f"  {f.stem}:  [{blob.get('label', _DEV_LABEL)}]")
         if f.stem == "bench-metrics-exp-f" and isinstance(blob, dict):
             out += _fmt_exp_f(blob)
         elif "gates" in blob and "clean_dev_test" in blob:

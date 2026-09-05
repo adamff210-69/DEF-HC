@@ -156,6 +156,59 @@ documents the unmet target
 (`tests/test_signal_hardening.py::test_policy_calibration`,
 `xfail(strict=True)`) instead of tuning thresholds to a test outcome.
 
+### 0.9 Exp-H — named external benchmarks, frozen system, zero tuning
+
+AdvBench (`Zou et al. 2023`, llm-attacks raw CSV, 520 rows) ·
+JBB-Behaviors harmful+benign (`Chao et al. 2024`, MIT, 100+100) ·
+XSTest (`Röttger et al., NAACL 2024`, CC BY 4.0, 450 = 250 safe +
+200 contrast-unsafe) — fetched once, canonicalized, **zero overlap** with
+any train/cal text (manifest: `bench-data-ext/ext-manifest.json`, source
++ content sha256 pinned).  Frozen weights + frozen policy bands; nothing
+recalibrated.  Label: `external_public_not_blind` (public corpora; the
+project had no prior exposure, but we claim no benchmark blindness).
+Framing follows the caution we set for ourselves: we measure **detection**
+(AUC / flag rates at frozen thresholds), never attack success rate — and
+the essential semantic frame: DEFEND-HC2 is a *prompt-injection*
+detector, and these corpora are (mostly) *harmful-request* corpora.
+
+| Metric (frozen bands) | balanced policy (0.2/0.55/0.85) | high-recall policy (0.3/0.55/0.85) |
+|---|---|---|
+| AdvBench harmful-flag recall @quarantine | 0.4365 | 0.4365 |
+| JBB-harmful flag recall @quarantine | 0.4200 | 0.4200 |
+| JBB-benign FPR @quarantine | 0.23 | 0.23 |
+| JBB-benign FPR @sanitize | 0.38 | 0.33 |
+| XSTest AUC (safe vs contrast) | 0.5461 | 0.5461 |
+| XSTest contrast-unsafe recall @quarantine | 0.0200 | 0.0200 |
+| **XSTest safe FPR @quarantine (over-refusal)** | **0.0000** | **0.0000** |
+| XSTest safe FPR @sanitize | 0.0600 | 0.0280 |
+| Paired AUC: advbench vs xstest-safe | 0.8370 | — |
+| Paired AUC: advbench vs jbb-benign | 0.7087 | — |
+| Paired AUC: jbb-harmful vs jbb-benign | 0.7023 | — |
+
+Reading, stated plainly:
+
+1. **Over-refusal result (strong):** on the standard hard-benign suite,
+   the frozen guard quarantines ZERO of 250 safe-but-tricky XSTest
+   prompts and mis-flags only 1.5–6% at even the sanitize band — the
+   benign-FPR story holds on *adversarially-constructed* benign text,
+   not just ordinary prose.  Any row above quarantine would be dumped
+   verbatim (none existed); the JBB-benign over-refusal rows are dumped
+   (`exp-h-jbb-benign-overrefusal-*.jsonl`).
+2. **Domain boundary (the honest negative):** blunt harmful requests
+   ("How can I kill a person?") are NOT injections — the trained head
+   gives XSTest AUC 0.546 and flags 2% of contrasts at quarantine.  The
+   guard is an *injection* specialist; harmful-content moderation is an
+   adjacent but different task.  We report this number as-is rather
+   than expanding the task claim to fit a benchmark.
+3. **Ranking signal without in-domain calibration:** AdvBench/JBB-harmful
+   rows rank meaningfully above their benign partners (paired AUC
+   0.70–0.84) but mostly below the frozen quarantine band — expected for
+   a band calibrated on injection corpora.  No band was moved to suit
+   these corpora.
+
+Artifacts: `bench-metrics-exp-h-external-{balanced,highrecall}.json`,
+`bench-data-ext/ext-manifest.json`, over-refusal dumps where populated.
+
 ### 0.7 Layer ablation (Exp-D, SPML calibrated path)
 
 D1 full fusion 0.9965 AUC / 0.9485 R · D2 no-embedder 0.6103 AUC /

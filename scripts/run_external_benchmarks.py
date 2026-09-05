@@ -106,7 +106,8 @@ def main() -> int:
         scored[bench] = entry
         # over-refusal dump: every benign row flagged at/above quarantine
         if any(g == 0 and r >= quarantine for g, r in zip(ys, risks)):
-            dump = args.out_dir / f"exp-h-{bench}-overrefusal.jsonl"
+            dump = args.out_dir / (
+                f"exp-h-{bench}-overrefusal-{args.policy.stem}.jsonl")
             args.out_dir.mkdir(parents=True, exist_ok=True)
             with dump.open("w", encoding="utf-8") as fh:
                 for t, g, r, m in zip(texts, ys, risks, metas):
