@@ -93,6 +93,7 @@ def main() -> int:
     from defend_hc2.embedder import get_sentence_transformer
     from defend_hc2.modeling import fit_classifier
     from defend_hc2.perturb import TRANSFORMS
+    import numpy as np
 
     embedder = get_sentence_transformer(args.model)
     load = lambda name: load_jsonl(args.data_dir / name)
