@@ -111,7 +111,11 @@ def run_evaluation(split_rows: list[dict], system, session: str) \
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-dir", type=Path, default=Path("hcbench"))
-    ap.add_argument("--weights", type=Path, required=True)
+    ap.add_argument("--weights", type=Path, default=None,
+                    help="production weights; omit to run the pipeline in "
+                         "heuristic mode (no model download) — useful for "
+                         "smoke-testing the routing and report paths "
+                         "locally before spending GPU time")
     ap.add_argument("--policies", type=Path, nargs=2, required=True,
                     help="frozen policy JSONs (balanced, high-recall)")
     ap.add_argument("--out", type=Path, default=Path("bench-hcbench-metrics.json"))
@@ -127,8 +131,13 @@ def main() -> int:
     registry = ToolRegistry()
     registry.register_tool(BENCH_TOOL["name"], BENCH_TOOL["key"],
                            privileged=BENCH_TOOL["privileged"])
-    system = DEFEND_HC2(db_path=":memory:", demo_mode=False,
-                        weights_path=str(args.weights),
+    demo_mode = args.weights is None
+    if demo_mode:
+        print("WARNING: no --weights given; running in heuristic mode. "
+              "Numbers from this run are a smoke test, NOT results.")
+    system = DEFEND_HC2(db_path=":memory:", demo_mode=demo_mode,
+                        weights_path=(str(args.weights) if args.weights
+                                      else None),
                         tool_registry=registry,
                         master_secret=b"S" * 32)
 
@@ -155,6 +164,9 @@ def main() -> int:
         "policies": {},
         "channels": {"rag_doc": "retrieval component asserted",
                      "tool surfaces": "provenance verdict asserted"},
+        "scoring_mode": ("heuristic-smoke-test-NOT-RESULTS" if demo_mode
+                         else "trained-weights"),
+        "weights_path": (str(args.weights) if args.weights else None),
         "environment": environment_block(),
         "git_commit": git_commit(Path(__file__).resolve().parents[1]),
     }

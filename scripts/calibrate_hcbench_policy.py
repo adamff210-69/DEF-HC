@@ -34,7 +34,8 @@ from defend_hc2.modeling import (
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-dir", type=Path, default=Path("hcbench"))
-    ap.add_argument("--weights", type=Path, required=True)
+    ap.add_argument("--weights", type=Path, default=None,
+                    help="omit for a heuristic-mode smoke run")
     ap.add_argument("--target-recall", type=float, default=0.95)
     ap.add_argument("--provenance-tag", default="hcbench-balanced")
     ap.add_argument("--out", type=Path, required=True)
@@ -72,8 +73,12 @@ def main() -> int:
     registry = ToolRegistry()
     registry.register_tool(BENCH_TOOL["name"], BENCH_TOOL["key"],
                            privileged=BENCH_TOOL["privileged"])
-    system = DEFEND_HC2(db_path=":memory:", demo_mode=False,
-                        weights_path=str(args.weights),
+    demo_mode = args.weights is None
+    if demo_mode:
+        print("WARNING: no --weights; heuristic smoke run, NOT results.")
+    system = DEFEND_HC2(db_path=":memory:", demo_mode=demo_mode,
+                        weights_path=(str(args.weights) if args.weights
+                                      else None),
                         tool_registry=registry, master_secret=b"S" * 32)
 
     cal_rows = load_split(args.data_dir / "hcbench-cal.jsonl")
@@ -125,6 +130,9 @@ def main() -> int:
         "per_slice_test": per_slice,
         "frozen_score_system": "weights + channels identical; bands "
                                "regime-matched only",
+        "scoring_mode": ("heuristic-smoke-test-NOT-RESULTS" if demo_mode
+                         else "trained-weights"),
+        "weights_path": (str(args.weights) if args.weights else None),
         "environment": environment_block(),
         "git_commit": git_commit(Path(__file__).resolve().parents[1]),
     }
