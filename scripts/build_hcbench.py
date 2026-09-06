@@ -89,14 +89,30 @@ def main() -> int:
     print(f"exact dedup removed {sum(dup_by_source.values())} rows: "
           f"{dict(dup_by_source)}")
 
-    # ---- anti-leak removal vs existing train/cal corpora
+    # ---- anti-leak removal vs EVERY previously-observed corpus.
+    # Not just train/cal: any row this project has already scored or
+    # inspected (the foreign transfer sets used in Exp-B, the development
+    # test splits) must not reappear in hcbench-test/sealed, or the sealed
+    # split cannot honestly be called a blind holdout.
     from defend_hc2.modeling import load_jsonl
     guard: list[tuple[str, int]] = []
-    for name in ("slp-train.jsonl", "slp-cal.jsonl",
-                 "spml-train.jsonl", "spml-cal.jsonl"):
+    guard_used, guard_missing = [], []
+    for name in ("slp-train.jsonl", "slp-cal.jsonl", "slp-test.jsonl",
+                 "spml-train.jsonl", "spml-cal.jsonl", "spml-test.jsonl",
+                 "pi-test.jsonl",
+                 "foreign-deepset.jsonl",
+                 "foreign-jailbreak-classification.jsonl",
+                 "foreign-safe-guard.jsonl"):
         fp = args.leak_guard_dir / name
         if fp.exists():
             guard += load_jsonl(fp)
+            guard_used.append(name)
+        else:
+            guard_missing.append(name)
+    print(f"leak guard: {len(guard)} previously-observed rows "
+          f"from {len(guard_used)} files")
+    if guard_missing:
+        print(f"  NOTE absent, so NOT guarded against: {guard_missing}")
     guard_keys = {norm_for_dedup(t) for t, _ in guard}
     kept, removed_by_source = [], Counter()
     for r in deduped:
@@ -104,16 +120,25 @@ def main() -> int:
             removed_by_source[r["source"]] += 1
         else:
             kept.append(r)
-    print(f"overlap with train/cal removed {sum(removed_by_source.values())} "
-          f"rows: {dict(removed_by_source)}")
+    print(f"overlap with previously-observed corpora removed "
+          f"{sum(removed_by_source.values())} rows: {dict(removed_by_source)}")
 
-    # ---- 'semantic' category: attack rows invisible to the lexical scanner
-    n_semantic = 0
+    # ---- lexical-invisibility flag (ORTHOGONAL — category is preserved).
+    # This previously overwrote the row's category with "semantic", which
+    # pulled ~60% of attacks out of their own class and left each attack
+    # category holding only the rows the lexical channel already fires on
+    # — making per-category recall circular.  Keep the difficulty axis,
+    # keep the class axis, report the cross-tab.
+    n_invisible = 0
     for r in kept:
-        if r["label"] == 1 and analyzer.lexical_scan(r["text"])[0] == 0:
-            r["category"] = "semantic"
-            n_semantic += 1
-    print(f"semantic re-labeled (attack, lexical_scan==0): {n_semantic}")
+        if r["label"] == 1:
+            r["lexically_invisible"] = analyzer.lexical_scan(r["text"])[0] == 0
+            n_invisible += int(r["lexically_invisible"])
+        else:
+            r["lexically_invisible"] = None
+    n_attacks = sum(1 for r in kept if r["label"] == 1)
+    print(f"lexically-invisible attacks flagged: {n_invisible}/{n_attacks} "
+          f"({n_invisible / max(1, n_attacks):.1%}) — category preserved")
 
     # ---- group/template ids
     for r in kept:
@@ -163,15 +188,24 @@ def main() -> int:
     manifest = {
         "loaders": loader_report,
         "totals": {n: len(parts_named[n]) for n in SPLIT_NAMES},
+        "corpus_rows_after_filtering": len(kept),
         "benign_share": round(benign_share, 4),
         "per_category": dict(Counter(r["category"] for r in kept)),
         "per_surface": dict(Counter(r["surface"] for r in kept)),
+        "per_surface_attacks": dict(Counter(
+            r["surface"] for r in kept if r["label"] == 1)),
         "dedup_removed_by_source": dict(dup_by_source),
         "overlap_removed_by_source": dict(removed_by_source),
-        "semantic_relabeled": n_semantic,
+        "leak_guard_files_used": guard_used,
+        "leak_guard_files_absent": guard_missing,
+        "leak_guard_rows": len(guard),
+        "lexically_invisible_attacks": n_invisible,
+        "attack_rows": n_attacks,
         "seed": 42, "rules": ["no oversample", "no train on cal/test/sealed",
                               "sealed inspected once via eval_sealed.py only",
-                              "no silent drops"],
+                              "no silent drops",
+                              "lexical-invisibility is a flag, never a "
+                              "category overwrite"],
     }
     (args.reports / "hcbench-manifest.json").write_text(
         json.dumps(manifest, indent=2))

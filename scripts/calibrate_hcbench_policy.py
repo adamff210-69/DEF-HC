@@ -38,8 +38,26 @@ def main() -> int:
     ap.add_argument("--target-recall", type=float, default=0.95)
     ap.add_argument("--provenance-tag", default="hcbench-balanced")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--test-once", action="store_true", default=True)
+    ap.add_argument("--allow-repeat-test-eval", action="store_true",
+                    help="hcbench-test has already been consumed by a prior "
+                         "run of this script; pass this to knowingly repeat "
+                         "it (the repeat is recorded in the artifact).")
     args = ap.parse_args()
+
+    # Real one-shot bookkeeping.  The previous `--test-once` flag was
+    # `store_true, default=True` and was never read by anything, so it
+    # asserted a guarantee it did not provide: hcbench-test was in fact
+    # evaluated three times.  Count the passes and record the count.
+    ledger_fp = args.out.parent / ".hcbench-test-evaluations.json"
+    prior = (json.loads(ledger_fp.read_text()) if ledger_fp.exists()
+             else {"passes": []})
+    if prior["passes"] and not args.allow_repeat_test_eval:
+        print(f"REFUSING: hcbench-test already evaluated "
+              f"{len(prior['passes'])}x by this script:")
+        for p in prior["passes"]:
+            print(f"  - {p}")
+        print("Pass --allow-repeat-test-eval to proceed knowingly.")
+        return 2
 
     from defend_hc2 import DEFEND_HC2
     from defend_hc2.provenance import ToolRegistry
@@ -79,12 +97,17 @@ def main() -> int:
 
     slices: dict[str, list] = defaultdict(lambda: [[], []])
     for y, s, r in zip(y_test, scores_test, test_rows):
-        for key in (r["category"], (r["category"], r["subtype"])):
+        keys = [r["category"], f'{r["category"]}/{r["subtype"]}']
+        if r["label"] == 1:
+            keys.append(f'{r["category"]}/'
+                        + ("lexically_invisible"
+                           if r.get("lexically_invisible")
+                           else "lexically_visible"))
+        for key in keys:
             slices[key][0].append(y)
             slices[key][1].append(s)
-    per_slice = {str(k): per_slice_report(v[0], v[1], bands[1], bands[0])
-                 for k, v in sorted(slices.items(), key=lambda kv: str(kv[0]))
-                 if len(v[0]) >= 20}
+    per_slice = {k: per_slice_report(v[0], v[1], bands[1], bands[0])
+                 for k, v in sorted(slices.items()) if len(v[0]) >= 20}
 
     doc = {
         "policy": {"sanitize_at": bands[0], "quarantine_at": bands[1],
@@ -96,7 +119,9 @@ def main() -> int:
         "calibration": {"split": "hcbench-cal", "n": len(y_cal),
                         "base_rate": round(sum(y_cal) / len(y_cal), 4)},
         "calibration metrics": sel["metrics"],
-        "hcbench test metrics (evaluated once)": test_metrics,
+        "hcbench_test_metrics": test_metrics,
+        "hcbench_test_pass_number": len(prior["passes"]) + 1,
+        "prior_test_passes": prior["passes"],
         "per_slice_test": per_slice,
         "frozen_score_system": "weights + channels identical; bands "
                                "regime-matched only",
@@ -104,8 +129,13 @@ def main() -> int:
         "git_commit": git_commit(Path(__file__).resolve().parents[1]),
     }
     args.out.write_text(json.dumps(doc, indent=2))
-    doc["file_sha256"] = {args.out.name: file_sha256(args.out)}
-    args.out.write_text(json.dumps(doc, indent=2))
+    digest = file_sha256(args.out)
+    args.out.with_suffix(".sha256").write_text(f"{digest}  {args.out.name}\n")
+
+    prior["passes"].append(
+        {"tag": args.provenance_tag, "target_recall": args.target_recall,
+         "out": str(args.out), "sha256": digest})
+    ledger_fp.write_text(json.dumps(prior, indent=2))
 
     print(f"\ntest metrics (once): {test_metrics}")
     for cat, m in per_slice.items():

@@ -24,3 +24,11 @@ defend_hc2/weights/*.json
 .env
 *.pem
 master_secret*
+
+# generated evaluation artifacts (regenerate via scripts/; see docs/KAGGLE.md)
+bench-out/
+bench-data/
+bench-data-ext/
+hcbench/
+reports/
+*.sha256

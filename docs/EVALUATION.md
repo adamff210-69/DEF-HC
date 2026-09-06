@@ -211,59 +211,95 @@ Artifacts: `bench-metrics-exp-h-external-{balanced,highrecall}.json`,
 
 ### 0.10 HC-Bench — provenance-tracked surface-routed benchmark (frozen system)
 
-Build (`scripts/build_hcbench.py`, seed 42): 8 loaders produced 5,017
-rows after exact dedup (23 removed), train/cal anti-leak removal (1),
-and `semantic` re-labeling of 1,146 lexically-invisible attack rows;
-skipped sources are named with verbatim reasons in
-`reports/hcbench-manifest.json` (wildjailbreak gated; bipia hub-id
-dead; five sources deferred with unverified layouts — never
-substituted).  Group-aware (category,surface) 4-way split:
-train 2,510 / cal 1,254 / test 1,253 / **sealed 1,254 (never used)**;
-benign share 0.693.  The sealed split is hashed and consumed ONLY by
-`scripts/eval_sealed.py` (one-shot guard + static repo scan in the
-suite) and has NOT been evaluated.
+> **STATUS: WITHDRAWN PENDING REBUILD.**  The numbers previously printed
+> in this section were produced by a build with two defects that change
+> what they mean.  They are retained below, struck through, with the
+> defect named against each — deleting them would hide a correction that
+> belongs in the record.  No HC-Bench figure should be cited until the
+> rebuild lands.
 
-hcbench-test, production channels, FROZEN bands (no tuning anywhere;
-routing proved at scoring time — rag_doc rows must hit the retrieval
-component, tool rows must carry a provenance verdict):
+**Defect 1 — per-category recall was circular.**  The builder assigned
+`category = "semantic"` to every attack row the lexical scanner could
+not see.  Because that *overwrote* the class label rather than tagging
+difficulty, 1,146 of 1,925 attack rows (59.5%) were removed from their
+own attack class.  What remained inside `jailbreak`,
+`instruction_override` and `injection` was, by construction, only the
+subset one of the scored channels already fires on — so
+`jailbreak recall = 1.0000` measured a pre-filtered easy set, not
+generalization.  Fixed: `lexically_invisible` is now an orthogonal
+boolean and the cross-tab (category × visibility) is reported.
 
-| Slice (≥20 rows) | attack recall@q | benign FPR@q | FPR@s (sanitize band) |
-|---|---|---|---|
-| Overall (n=1,253; AUC 0.8758) | 0.8329 | 0.1954 | 0.5862 |
-| `jailbreak` (advbench/JBB/jackhhao/hackaprompt) | **1.0000** | — | — |
-| `instruction_override` (gandalf) | 0.9885 | — | — |
-| `semantic` (lexically-invisible attacks) | 0.7293–0.914 | — | — |
-| `injection` (deepset generic) | 0.8000 | 0.0857 | 0.2857 |
-| benign XSTest/OR/JBB hard-benign | — | 0.229 | 0.5561 |
-| benign instructions (alpaca/dolly) | — | 0.1304 | 0.2802 |
-| benign retrieved passages (MS MARCO, rag_doc) | — | 0.005 | 1.000 |
-| benign generic (deepset/jackhhao benign) | — | **0.6397** | 0.8088 |
+**Defect 2 — the corpus was not filtered against previously-observed
+data.**  The anti-leak guard checked only `slp-{train,cal}` and
+`spml-{train,cal}`.  It did **not** check the Exp-B foreign transfer
+sets — which `scripts/prepare_benchmarks.py` builds from
+`deepset/prompt-injections` and `jackhhao/jailbreak-classification`,
+*the same two HF datasets HC-Bench loads* (jackhhao alone: 1,306 rows,
+21% of the corpus).  Those rows were scored and reported in Exp-B, so
+`hcbench-test` and `hcbench-sealed` both contain previously-inspected
+data.  **The sealed split is therefore not currently a blind holdout,
+and `eval_sealed.py` must not be run against this build.**  Fixed: the
+guard now covers `foreign-*`, `pi-test` and both `*-test` splits.
 
-Reading, stated plainly:
+Two further corrections to the record:
 
-1. **Attack-side generalization holds**: near-neighbors of the training
-   lineage (gandalf overrides, advbench/JBB-class jailbreaks) flag at
-   .99–1.00 recall on frozen bands; the deliberately hard `semantic`
-   slice (lexically-invisible) lands .73–.91.
-2. **Regime boundary (honest negative):** benign rows authored inside
-   foreign *jailbreak corpora* (deepset/jackhhao "benign" — jailbreak-
-   adjacent phrasing by construction) hit FPR 0.64 at the frozen
-   quarantine band.  Nothing was recalibrated to hide this; the
-   regime-matched fix is calibration on `hcbench-cal` (band provenance
-   unchanged), for which the recorded cal-derived operating point is
-   recall@0.95 → threshold 0.0035 (bench-hcbench-metrics.json).
-   Foreign-corpus benign text is a different benign regime than
-   S-Labs/SPML benign.
-3. **Surface routing matters:** benign retrieved documents almost never
-   quarantine (0.005) but always trigger the sanitize strip-and-allow
-   band (1.0) — unprovenanced third-party content is carried only after
-   sanitization — the designed posture, now measured on 1,000 real
-   MS MARCO passages.
+* Corpus size was stated as 5,017 rows.  The splits sum to **6,271**
+  (2,510 + 1,254 + 1,253 + 1,254), as does the stratum table.  The
+  error is exactly one sealed split.
+* This section stated `hcbench-test` was "evaluated once".  It was
+  evaluated **three times** — once by `eval_hcbench.py` and twice by
+  `calibrate_hcbench_policy.py` (targets 0.95 and 0.98).  The
+  `--test-once` flag that implied otherwise was
+  `store_true, default=True` and was never read.  Pass counting is now
+  enforced on disk.
+
+<details><summary>Withdrawn figures (do not cite)</summary>
+
+| Slice (≥20 rows) | attack recall@q | benign FPR@q | FPR@s | defect |
+|---|---|---|---|---|
+| ~~Overall (n=1,253; AUC 0.8758)~~ | 0.8329 | 0.1954 | 0.5862 | 2 |
+| ~~`jailbreak`~~ | 1.0000 | — | — | 1 — easy subset only |
+| ~~`instruction_override`~~ | 0.9885 | — | — | 1 — easy subset only |
+| ~~`semantic`~~ | 0.7293–0.914 | — | — | 1 — not a class |
+| ~~`injection`~~ | 0.8000 | 0.0857 | 0.2857 | 1, 2 |
+| ~~benign hard-benign~~ | — | 0.229 | 0.5561 | 2 |
+| ~~benign instructions~~ | — | 0.1304 | 0.2802 | — |
+| ~~benign passages (rag_doc)~~ | — | 0.005 | 1.000 | see scope note |
+| ~~benign generic~~ | — | 0.6397 | 0.8088 | 2 |
+
+</details>
+
+**Scope limit that survives the rebuild.**  HC-Bench currently contains
+attack rows on **exactly one surface**.  The only `rag_doc` attack
+loader is BIPIA (skipped — hub id dead) and every tool-surface attack
+source (MCPTox, MCP-AttackBench, InjecAgent) is deferred with an
+unverified layout.  Attack/benign counts by surface: `user_prompt`
+1,925 / 2,986 · `rag_doc` **0** / 1,000 · `tool_description` **0** / 16.
+Consequently the retrieval and tool channels are exercised on benign
+traffic only; the reported "rag_doc posture" (0.005 quarantine, 1.000
+sanitize) is a false-positive profile, **not** evidence that those
+channels detect anything.  L3's detection capability is demonstrated in
+`python -m defend_hc2` (hidden HTML-comment injection → doc risk 1.0 →
+REJECT) but is not yet measured at scale.
+
+**Regime-matched band calibration: NEGATIVE RESULT.**  §0.10 previously
+asserted that the fix for the foreign-benign FPR was calibration on
+`hcbench-cal`.  Two runs of `scripts/calibrate_hcbench_policy.py`
+(targets 0.95 and 0.98) disproved it: both reported *target recall
+infeasible* and fell to the grid floor `(0.15, 0.40, 0.70)` at benign
+FPR 0.61.  The cause is structural — `sweep_grid` starts the sanitize
+band at **0.15**, while hcbench-cal needs **0.0035** to reach recall
+0.95, a 43× gap.  **The band vocabulary cannot express the operating
+point this score distribution requires.**  Regime matching on this
+corpus is a threshold-level change, not a band-level one; widening the
+grid is a policy-design decision and is deliberately not made inside an
+evaluation pass.  Both runs returned identical bands and identical
+metrics, so the two emitted policy files are one result, not two
+regimes.
 
 Artifacts: `reports/hcbench-manifest.json`, `reports/sealed-manifest.json`,
-`bench-out/bench-hcbench-metrics.json`, `hcbench/hcbench-*.jsonl`.
-Label: `hcbench_test_production_frozen_policies`; the sealed pass will
-carry `blind_holdout_evaluated_once` and runs exactly once, by flag.
+`bench-out/bench-hcbench-metrics.json` (+ `.sha256` sidecar),
+`hcbench/hcbench-*.jsonl`.
 
 ### 0.7 Layer ablation (Exp-D, SPML calibrated path)
 

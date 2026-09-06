@@ -17,13 +17,21 @@ ROW_FIELDS = (
     "id", "text", "label", "category", "subtype", "surface",
     "system_prompt", "context", "source", "source_id", "license",
     "label_origin", "language", "group_id", "split", "derived_from",
+    "lexically_invisible",
 )
 
 
 def mk_row(text, label, category, surface, source, source_id, license_,
            label_origin, subtype="generic", system_prompt="", context="",
            language="en", derived_from=""):
-    """Canonical row; split/group_id assigned later by the builder."""
+    """Canonical row; split/group_id assigned later by the builder.
+
+    ``lexically_invisible`` is an ORTHOGONAL difficulty flag set by the
+    builder (attack rows the lexical scanner cannot see).  It deliberately
+    does NOT overwrite ``category``: doing so would remove every hard row
+    from its own attack class and leave behind only the rows one of the
+    scored channels already fires on, making per-category recall circular.
+    """
     return {
         "id": f"{source}-{source_id}", "text": str(text).strip(),
         "label": int(label), "category": category, "subtype": subtype,
@@ -31,7 +39,7 @@ def mk_row(text, label, category, surface, source, source_id, license_,
         "context": context, "source": source, "source_id": str(source_id),
         "license": license_, "label_origin": label_origin,
         "language": language, "group_id": "", "split": "",
-        "derived_from": derived_from,
+        "derived_from": derived_from, "lexically_invisible": None,
     }
 
 
@@ -39,6 +47,7 @@ def validate_row(r: dict) -> bool:
     return (all(k in r for k in ROW_FIELDS)
             and isinstance(r["text"], str) and bool(r["text"])
             and r["label"] in (0, 1)
+            and r["lexically_invisible"] in (None, True, False)
             and r["surface"] in ("user_prompt", "rag_doc",
                                  "tool_description", "tool_output"))
 

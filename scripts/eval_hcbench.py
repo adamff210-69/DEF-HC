@@ -57,14 +57,18 @@ def score_row(system, session: str, row: dict) -> tuple[float, str]:
                              "source_uri": f"hcbench://{row['source']}/"
                                            f"{row['source_id']}"}])
         comp = pr.decision.component_scores or {}
-        assert any(k.startswith("retrieval") and v is not None
-                   for k, v in comp.items()), \
-            "rag_doc row did not hit the retrieval channel"
+        # Explicit raise, not `assert`: routing proofs must survive -O.
+        if not any(k.startswith("retrieval") and v is not None
+                   for k, v in comp.items()):
+            raise RuntimeError(
+                f"rag_doc row {row['id']!r} did not hit the retrieval "
+                f"channel (components: {sorted(comp)})")
         return pr.decision.content_risk, "retrieved_docs"
     prov, dec = system.submit_tool_result(
         session, BENCH_TOOL["name"],
         {"surface": surface, "row_id": row["id"]}, row["text"])
-    assert getattr(prov, "verdict", None), "tool row missing provenance verdict"
+    if not getattr(prov, "verdict", None):
+        raise RuntimeError(f"tool row {row['id']!r} missing provenance verdict")
     return dec.content_risk, f"submit_tool_result[{prov.verdict}]"
 
 
@@ -90,12 +94,12 @@ def per_slice_report(ys, scores, quarantine_cut, sanitize_cut):
 
 def run_evaluation(split_rows: list[dict], system, session: str) \
         -> tuple[list[float], list[str]]:
-    try:
+    # Explicit existence check rather than a blanket `except Exception`,
+    # which previously masked genuine construction failures.
+    if system.ledger.get_session(session) is None:
         system.create_session(
             "HC-Bench evaluation session (neutral assistant).",
             session_id=session)
-    except Exception:
-        pass  # already exists (in-memory ledger restore path)
     scores, proofs = [], []
     for row in split_rows:
         s, proof = score_row(system, session, row)
@@ -111,7 +115,10 @@ def main() -> int:
     ap.add_argument("--policies", type=Path, nargs=2, required=True,
                     help="frozen policy JSONs (balanced, high-recall)")
     ap.add_argument("--out", type=Path, default=Path("bench-hcbench-metrics.json"))
-    ap.add_argument("--split", default="test")
+    ap.add_argument("--split", default="test", choices=("cal", "test"),
+                    help="NEVER 'sealed' — the sealed split is reachable "
+                         "only through scripts/eval_sealed.py, which "
+                         "enforces the one-shot guard.")
     args = ap.parse_args()
 
     from defend_hc2 import DEFEND_HC2
@@ -159,22 +166,48 @@ def main() -> int:
         block = {"bands": {"sanitize_at": san, "quarantine_at": qua,
                            "reject_at": pol["reject_at"]},
                  "overall": per_slice_report(y_eval, scores_eval, qua, san)}
-        cat_rows: dict[str, list] = defaultdict(lambda: [[], []])
-        surf_rows: dict[str, list] = defaultdict(lambda: [[], []])
+        # NOTE on reading these tables: `overall.fpr@*` is computed over ALL
+        # negative rows.  The per_category "benign" entry covers only rows
+        # whose *category* is benign — some negatives live inside attack
+        # categories (e.g. deepset ships benign rows under `injection`), so
+        # the two FPR figures legitimately differ.  Both are reported.
+        cat_rows: dict = defaultdict(lambda: [[], []])
+        sub_rows: dict = defaultdict(lambda: [[], []])
+        surf_rows: dict = defaultdict(lambda: [[], []])
+        diff_rows: dict = defaultdict(lambda: [[], []])
         for y, s, r in zip(y_eval, scores_eval, eval_rows):
             cat_rows[r["category"]][0].append(y)
             cat_rows[r["category"]][1].append(s)
-            cat_rows[(r["category"], r["subtype"])][0].append(y)
-            cat_rows[(r["category"], r["subtype"])][1].append(s)
+            sub_rows[f'{r["category"]}/{r["subtype"]}'][0].append(y)
+            sub_rows[f'{r["category"]}/{r["subtype"]}'][1].append(s)
             surf_rows[r["surface"]][0].append(y)
             surf_rows[r["surface"]][1].append(s)
-        block["per_category"] = {
-            str(k): per_slice_report(v[0], v[1], qua, san)
-            for k, v in sorted(cat_rows.items(), key=lambda kv: str(kv[0]))
-            if len(v[0]) >= 20}
-        block["per_surface"] = {
-            k: per_slice_report(v[0], v[1], qua, san)
-            for k, v in sorted(surf_rows.items())}
+            if r["label"] == 1:
+                key = ("lexically_invisible" if r.get("lexically_invisible")
+                       else "lexically_visible")
+                diff_rows[f'{r["category"]}/{key}'][0].append(y)
+                diff_rows[f'{r["category"]}/{key}'][1].append(s)
+
+        def _table(d, min_n):
+            """Slices >= min_n, PLUS a rollup of everything below it so no
+            rows silently vanish from the report (the small-slice tail was
+            previously invisible and skewed how aggregates read)."""
+            big = {k: per_slice_report(v[0], v[1], qua, san)
+                   for k, v in sorted(d.items()) if len(v[0]) >= min_n}
+            small_y, small_s, small_k = [], [], []
+            for k, v in sorted(d.items()):
+                if len(v[0]) < min_n:
+                    small_y += v[0]; small_s += v[1]; small_k.append(k)
+            if small_y:
+                big[f"__rollup_of_{len(small_k)}_slices_under_{min_n}"] = {
+                    **per_slice_report(small_y, small_s, qua, san),
+                    "slices": small_k}
+            return big
+
+        block["per_category"] = _table(cat_rows, 20)
+        block["per_subtype"] = _table(sub_rows, 20)
+        block["per_surface"] = _table(surf_rows, 1)
+        block["per_category_by_lexical_visibility"] = _table(diff_rows, 20)
         if 0 < sum(y_eval) < len(y_eval):
             block["ci95"] = bootstrap_cis(y_eval, scores_eval, cal_thr,
                                           resamples=1000, seed=42)
@@ -183,15 +216,24 @@ def main() -> int:
         print(f"\n[{name}] test n={ov['n']} recall@q={ov['recall@quarantine']} "
               f"fpr@q={ov['fpr@quarantine']} fpr@s={ov['fpr@sanitize']} "
               f"auc={ov.get('roc_auc')}")
-        for cat, m in block["per_category"].items():
-            print(f"   {str(cat):40s} r@q={m['recall@quarantine']} "
-                  f"fpr@q={m['fpr@quarantine']} fpr@s={m['fpr@sanitize']}")
+        for title, key in (("per category", "per_category"),
+                           ("by lexical visibility",
+                            "per_category_by_lexical_visibility")):
+            print(f"  -- {title} --")
+            for cat, m in block[key].items():
+                print(f"   {str(cat):46s} n={m['n']:<5d} "
+                      f"r@q={m['recall@quarantine']} "
+                      f"fpr@q={m['fpr@quarantine']} fpr@s={m['fpr@sanitize']}")
 
-    report["file_sha256"] = {}
+    # sha256 of the artifact is recorded in a SIDECAR file: embedding the
+    # digest into the document it hashes makes the recorded value refer to
+    # a file that no longer exists on disk (it was the pre-insertion form).
     args.out.write_text(json.dumps(report, indent=2))
-    report["file_sha256"] = {args.out.name: file_sha256(args.out)}
-    args.out.write_text(json.dumps(report, indent=2))
+    digest = file_sha256(args.out)
+    args.out.with_suffix(".sha256").write_text(
+        f"{digest}  {args.out.name}\n")
     print(f"\nwrote {args.out}")
+    print(f"sha256 {digest}  -> {args.out.with_suffix('.sha256').name}")
     return 0
 
 
