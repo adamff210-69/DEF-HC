@@ -26,12 +26,12 @@ import json
 import re
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from defend_hc2.modeling import (
-    calibrate_thresholds,
     environment_block,
     file_sha256,
     git_commit,
@@ -142,6 +142,65 @@ def metrics_at(y, s, thr):
     }
 
 
+#: A threshold whose benign FPR is at or above this is not an operating
+#: point, it is a shrug.  Reported as degenerate rather than quietly used.
+_DEGENERATE_FPR = 0.5
+
+
+def select_threshold(y, s, target_recall=None, fpr_budget=None):
+    """Pick one threshold under an explicit, recorded objective.
+
+    Mirrors ``scripts.calibrate_policy.select_policy``.  The failure this
+    guards against: asking for a recall the model cannot deliver drives the
+    threshold to the bottom of the score range, which "achieves" the target
+    by flagging everything.  That is reported as recall 1.0 / FPR 1.0 and is
+    worthless as a comparison point -- every system looks the same.
+    """
+    cands = sorted(set(s))
+    rows = [(t, metrics_at(y, s, t)) for t in cands]
+
+    if fpr_budget is not None:
+        objective = f"max recall s.t. benign FPR <= {fpr_budget}"
+        ok = [(t, m) for t, m in rows
+              if (m["benign_fpr"] or 0) <= fpr_budget + 1e-9]
+        if ok:
+            t, m = max(ok, key=lambda x: ((x[1]["recall"] or 0), x[0]))
+            return {"threshold": float(t), "objective": objective,
+                    "feasible": True, "note": objective, "metrics": m}
+        t, m = min(rows, key=lambda x: ((x[1]["benign_fpr"] or 0), -(x[1]["recall"] or 0)))
+        return {"threshold": float(t), "objective": objective,
+                "feasible": False,
+                "note": (f"INFEASIBLE: no threshold reaches benign FPR <= "
+                         f"{fpr_budget}; lowest available is "
+                         f"{m['benign_fpr']}"),
+                "metrics": m}
+
+    objective = f"lowest benign FPR s.t. recall >= {target_recall}"
+    ok = [(t, m) for t, m in rows
+          if (m["recall"] or 0) >= target_recall - 1e-9]
+    if not ok:                                   # cannot happen, kept honest
+        t, m = max(rows, key=lambda x: (x[1]["recall"] or 0))
+        return {"threshold": float(t), "objective": objective,
+                "feasible": False,
+                "note": (f"INFEASIBLE: recall >= {target_recall} unreachable; "
+                         f"best is {m['recall']}"),
+                "metrics": m}
+    t, m = min(ok, key=lambda x: ((x[1]["benign_fpr"] or 0), -x[0]))
+    degenerate = (m["benign_fpr"] or 0) >= _DEGENERATE_FPR
+    return {
+        "threshold": float(t), "objective": objective,
+        "feasible": not degenerate,
+        "note": (objective if not degenerate else
+                 f"DEGENERATE: recall >= {target_recall} is only reachable "
+                 f"by flagging {m['benign_fpr']:.0%} of benign traffic. The "
+                 f"target exceeds what this model can deliver on this "
+                 f"corpus; the threshold is at the bottom of its score "
+                 f"range. Use --fpr-budget, and/or --exclude-category for "
+                 f"classes outside the model's domain. ROC-AUC "
+                 f"({m['roc_auc']}) is threshold-free and still comparable."),
+        "metrics": m}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-dir", type=Path, default=Path("hcbench"))
@@ -151,6 +210,17 @@ def main() -> int:
     ap.add_argument("--hf-token", default=None,
                     help="unlocks the gated Meta Prompt Guard 2 models")
     ap.add_argument("--target-recall", type=float, default=0.95)
+    ap.add_argument("--fpr-budget", type=float, default=None,
+                    help="switch the threshold objective to: maximize recall "
+                         "subject to benign FPR <= this value. Bounded by "
+                         "construction. Use when the recall target is not "
+                         "attainable and would otherwise select a "
+                         "flag-everything threshold.")
+    ap.add_argument("--exclude-category", nargs="*", default=(),
+                    help="categories held OUT of threshold selection as "
+                         "outside the detectors' domain (e.g. "
+                         "harmful-content). Still scored and reported "
+                         "per-category on test.")
     ap.add_argument("--out", type=Path,
                     default=Path("bench-out/bench-baselines.json"))
     ap.add_argument("--only", nargs="*", default=None,
@@ -170,7 +240,46 @@ def main() -> int:
     y_cal = [int(r["label"]) for r in cal]
     y_test = [int(r["label"]) for r in test]
     print(f"comparison set (user_prompt surface only): "
-          f"cal n={len(cal)}  test n={len(test)}\n")
+          f"cal n={len(cal)}  test n={len(test)}")
+
+    excluded = set(args.exclude_category or ())
+    sel_idx = [i for i, r in enumerate(cal) if r.get("category") not in excluded]
+    if excluded:
+        print(f"threshold selection excludes {sorted(excluded)}: "
+              f"{len(cal) - len(sel_idx)} of {len(cal)} cal rows held out "
+              f"(still reported per-category on test)")
+    y_sel = [y_cal[i] for i in sel_idx]
+    print()
+
+    def _finish(s_cal, s_test, per_text, meta_block):
+        """Threshold under the recorded objective + per-category test view."""
+        sel = select_threshold([y_cal[i] for i in sel_idx],
+                               [s_cal[i] for i in sel_idx],
+                               target_recall=(None if args.fpr_budget is not None
+                                              else args.target_recall),
+                               fpr_budget=args.fpr_budget)
+        thr = sel["threshold"]
+        if not sel["feasible"]:
+            print(f"     !! {sel['note']}")
+        by_cat: dict = defaultdict(lambda: [[], []])
+        for yy, ss, rr in zip(y_test, s_test, test):
+            by_cat[rr["category"]][0].append(yy)
+            by_cat[rr["category"]][1].append(ss)
+        return {
+            **meta_block,
+            "threshold_source": (f"hcbench-cal, {sel['objective']}"
+                                 + (f", excluding {sorted(excluded)}"
+                                    if excluded else "")),
+            "threshold_objective": sel["objective"],
+            "threshold_objective_feasible": sel["feasible"],
+            "threshold_objective_note": sel["note"],
+            "threshold": round(float(thr), 6),
+            "cal": metrics_at(y_cal, s_cal, thr),
+            "test": metrics_at(y_test, s_test, thr),
+            "test_by_category": {k: metrics_at(v[0], v[1], thr)
+                                 for k, v in sorted(by_cat.items())},
+            "latency_ms_per_text": round(per_text * 1000, 3),
+        }
 
     results, skipped = {}, {}
 
@@ -195,17 +304,8 @@ def main() -> int:
             print(f"SKIP {key:26s} — {reason}")
             skipped[key] = {**meta, "reason": reason}
             continue
-        thr = calibrate_thresholds(y_cal, s_cal,
-                                   recall_targets=(args.target_recall,)
-                                   )[f"recall@{args.target_recall}"]
-        results[key] = {
-            **{k: v for k, v in meta.items() if k != "gated"},
-            "threshold_source": f"hcbench-cal recall@{args.target_recall}",
-            "threshold": round(float(thr), 6),
-            "cal": metrics_at(y_cal, s_cal, thr),
-            "test": metrics_at(y_test, s_test, thr),
-            "latency_ms_per_text": round(per_text * 1000, 3),
-        }
+        results[key] = _finish(s_cal, s_test, per_text,
+                               {k: v for k, v in meta.items() if k != "gated"})
 
     # ---- DEF-HC through its own production channels, same rows, same rule
     if args.weights:
@@ -223,10 +323,7 @@ def main() -> int:
         t0 = time.perf_counter()
         s_test, _ = run_evaluation(test, system, "base-test")
         per_text = (time.perf_counter() - t0) / max(1, len(test))
-        thr = calibrate_thresholds(y_cal, s_cal,
-                                   recall_targets=(args.target_recall,)
-                                   )[f"recall@{args.target_recall}"]
-        results["def-hc"] = {
+        results["def-hc"] = _finish(s_cal, s_test, per_text, {
             "model_id": "this work (L0-L5 fused, production path)",
             "params": "33M embedder + logistic head",
             "license": "see repository",
@@ -235,13 +332,7 @@ def main() -> int:
                               "head in isolation.",
             "contamination": "Trained on S-Labs + SPML; HC-Bench is filtered "
                              "against every previously-observed corpus.",
-            "threshold_source": f"hcbench-cal recall@{args.target_recall}",
-            "threshold": round(float(thr), 6),
-            "cal": metrics_at(y_cal, s_cal, thr),
-            "test": metrics_at(y_test, s_test, thr),
-            "latency_ms_per_text": round(per_text * 1000, 3),
-        }
-
+        })
     report = {
         "label": "baseline_comparison_public_models_not_blind",
         "protocol": "identical for every system: threshold calibrated on "
@@ -265,15 +356,35 @@ def main() -> int:
     args.out.with_suffix(".sha256").write_text(f"{digest}  {args.out.name}\n")
 
     print(f"\n{'system':28s} {'params':>10s} {'AUC':>7s} {'PR-AUC':>7s} "
-          f"{'recall':>7s} {'FPR':>7s} {'ms/txt':>8s}")
-    print("-" * 82)
+          f"{'recall':>7s} {'FPR':>7s} {'ms/txt':>8s}  {'':<3s}")
+    print("-" * 86)
     for k, v in sorted(results.items(),
                        key=lambda kv: -(kv[1]["test"]["roc_auc"] or 0)):
         t = v["test"]
+        flag = "" if v.get("threshold_objective_feasible", True) else "  <!>"
         print(f"{k:28s} {v['params']:>10s} {t['roc_auc'] or 0:>7.4f} "
               f"{t['pr_auc'] or 0:>7.4f} {t['recall'] or 0:>7.4f} "
-              f"{t['benign_fpr'] or 0:>7.4f} {v['latency_ms_per_text']:>8.2f}")
-    print("-" * 82)
+              f"{t['benign_fpr'] or 0:>7.4f} {v['latency_ms_per_text']:>8.2f}{flag}")
+    print("-" * 86)
+    if any(not v.get("threshold_objective_feasible", True)
+           for v in results.values()):
+        print("<!> threshold objective NOT met — that row's recall/FPR is a\n"
+              "    degenerate operating point, not a calibrated one. ROC-AUC\n"
+              "    and PR-AUC are threshold-free and remain comparable.")
+    # Per-category test view: shows which classes every detector misses.
+    cats = sorted({c for v in results.values()
+                   for c in v.get("test_by_category", {})})
+    if cats and results:
+        print(f"\nrecall by category at each system's own threshold")
+        print(f"{'system':28s} " + " ".join(f"{c[:14]:>15s}" for c in cats))
+        print("-" * (28 + 16 * len(cats)))
+        for k, v in sorted(results.items()):
+            cells = []
+            for c in cats:
+                m = v.get("test_by_category", {}).get(c)
+                r = None if m is None else m["recall"]
+                cells.append(f"{'   —':>15s}" if r is None else f"{r:>15.4f}")
+            print(f"{k:28s} " + " ".join(cells))
     for k, v in skipped.items():
         print(f"SKIPPED {k}: {v['reason']}")
     print(f"\nwrote {args.out}\nsha256 {digest}")

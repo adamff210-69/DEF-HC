@@ -165,7 +165,17 @@ assert mode == "trained-weights", "--weights did not take; numbers are meaningle
 
 
 # ============================================================================
-# %% Cell 7 — published baselines   <<< least-tested path; paste me any traceback
+# %% Cell 7 — published baselines
+#
+# Threshold objective is an FPR budget, not a recall target: at
+# --target-recall 0.95 no detector here can comply except by flagging every
+# input, which reports recall 1.0 / FPR 1.0 for everyone and hides all real
+# differences. Rows whose objective was not met are marked <!> in the table.
+#
+# harmful-content is excluded from THRESHOLD SELECTION (out of domain for
+# every content classifier, ours included) but still reported in the
+# per-category recall table — that table is the scope argument, measured.
+#
 # ProtectAI v1/v2 always. Meta Prompt Guard 2 only with an HF token whose
 # account accepted the Llama 4 Community License on BOTH model pages.
 # ============================================================================
@@ -179,7 +189,7 @@ except Exception:
 
 args = ["scripts/run_baselines.py",
         "--data-dir", HCBENCH, "--weights", WEIGHTS,
-        "--target-recall", "0.95",
+        "--fpr-budget", "0.01", "--exclude-category", "harmful-content",
         "--out", OUTDIR / "bench-baselines.json"]
 if HF_TOKEN:
     args += ["--hf-token", HF_TOKEN]
