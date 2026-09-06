@@ -23,11 +23,17 @@ def _quiet_hf_logging() -> None:
 
 
 @lru_cache(maxsize=8)
-def get_sentence_transformer(model_name: str):
+def get_sentence_transformer(model_name: str, device: str | None = None):
     """Cached ``SentenceTransformer(model_name)`` (one load per process).
 
-    Note for tests: the cache is keyed by model name — a test that swaps a
-    fake backend for the same name must call :func:`clear_cache` first.
+    ``device`` defaults to CUDA when torch reports it available.  This used
+    to be left entirely to sentence-transformers' own auto-detection, which
+    made a CPU fallback completely silent: on an accelerated machine the
+    only symptom was that embedding took tens of minutes.  The resolved
+    device is now returned on the object and logged by callers.
+
+    Note for tests: the cache is keyed by (model name, device) — a test that
+    swaps a fake backend for the same name must call :func:`clear_cache`.
     """
     from defend_hc2.exceptions import EmbeddingBackendUnavailableError
 
@@ -39,7 +45,51 @@ def get_sentence_transformer(model_name: str):
             "install the 'ml' extra (pip install -r requirements-ml.txt)"
         ) from exc
     _quiet_hf_logging()
-    return SentenceTransformer(model_name)
+    if device is None:
+        device = _auto_device()
+    try:
+        return SentenceTransformer(model_name, device=device)
+    except TypeError:
+        # Older sentence-transformers (or a test double) without a `device`
+        # kwarg: fall back to its own auto-detection rather than failing.
+        return SentenceTransformer(model_name)
+
+
+def _auto_device() -> str:
+    """CUDA when it is genuinely usable, else CPU.  Never raises."""
+    try:
+        import torch
+    except ImportError:  # pragma: no cover - environment dependent
+        return "cpu"
+    try:
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+            return "cuda"
+    except Exception:  # pragma: no cover - broken driver/runtime pairing
+        pass
+    return "cpu"
+
+
+def device_report() -> dict:
+    """Diagnostic block: what torch can actually see.
+
+    Printed by the training/eval scripts so a silent CPU fallback shows up
+    in the log instead of only as elapsed time.
+    """
+    info: dict = {"selected_device": _auto_device()}
+    try:
+        import torch
+        info["torch_version"] = torch.__version__
+        info["cuda_available"] = bool(torch.cuda.is_available())
+        info["cuda_device_count"] = int(torch.cuda.device_count())
+        info["torch_cuda_build"] = torch.version.cuda
+        if info["cuda_available"]:
+            info["gpu_names"] = [torch.cuda.get_device_name(i)
+                                 for i in range(torch.cuda.device_count())]
+    except ImportError:
+        info["torch_version"] = None
+    except Exception as exc:  # pragma: no cover
+        info["error"] = f"{type(exc).__name__}: {exc}"[:200]
+    return info
 
 
 def clear_cache() -> None:

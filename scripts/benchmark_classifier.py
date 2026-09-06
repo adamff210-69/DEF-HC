@@ -126,13 +126,33 @@ def main() -> int:
     y_test = [y for _, y in eval_]
 
     # ---------------------------------------------------------- embed + fit
+    import time as _time
+
     import numpy as np
-    from defend_hc2.embedder import get_sentence_transformer
+    from defend_hc2.embedder import device_report, get_sentence_transformer
+
+    dev = device_report()
+    print(f"\n== embedding backend ==")
+    for k, v in dev.items():
+        print(f"   {k}: {v}")
+    if dev.get("selected_device") == "cpu":
+        print("   !! running on CPU. If this machine has a GPU, the accelerator\n"
+              "      is not visible to torch — embedding will take minutes to\n"
+              "      tens of minutes instead of seconds.")
 
     model = get_sentence_transformer(args.model)
+    texts = [t for t, _ in train + cal + eval_]
+    bs = 512 if dev.get("selected_device") == "cuda" else 128
+    print(f"\nembedding {len(texts):,} texts (batch_size={bs}, "
+          f"device={dev.get('selected_device')})…")
+    _t0 = _time.perf_counter()
     X = np.asarray(model.encode(
-        [t for t, _ in train + cal + eval_], normalize_embeddings=True,
-        convert_to_numpy=True, batch_size=256), dtype=float)
+        texts, normalize_embeddings=True,
+        convert_to_numpy=True, batch_size=bs, show_progress_bar=True),
+        dtype=float)
+    _dt = _time.perf_counter() - _t0
+    print(f"embedded in {_dt:.1f}s "
+          f"({len(texts) / max(_dt, 1e-9):,.0f} texts/s)")
     Xtr = X[: len(train)]
     Xcal = X[len(train): len(train) + len(cal)]
     Xte = X[len(train) + len(cal):]
@@ -155,8 +175,12 @@ def main() -> int:
 
     base_cal = probs(Xcal, fit["weights"], fit["bias"])
     base_te = probs(Xte, fit["weights"], fit["bias"])
+    print(f"\nbuilding meta features for {len(cal) + len(eval_):,} rows "
+          f"(pure-Python lexical/structural scan, CPU-bound)…")
+    _t0 = _time.perf_counter()
     Zcal = np.array([meta_row(t, p) for (t, _), p in zip(cal, base_cal)])
     Zte = np.array([meta_row(t, p) for (t, _), p in zip(eval_, base_te)])
+    print(f"meta features in {_time.perf_counter() - _t0:.1f}s")
     print("\n== stacked meta-model (trained on calibration split only) ==")
     meta = fit_classifier(Zcal, y_cal, Zcal, y_cal, seed=args.seed,
                           class_balance=not args.no_class_balance)
@@ -173,10 +197,14 @@ def main() -> int:
     print(f"deployment criterion (declared a priori): {key}")
 
     # lexical / demo baselines calibrated WITH THE SAME criterion on cal
+    print(f"scoring lexical + fused demo baselines on "
+          f"{2 * (len(cal) + len(eval_)):,} rows…")
+    _t0 = _time.perf_counter()
     lex_cal, lex_te = ([demo.lexical_scan(t)[0] for t, _ in part] for part in (cal, eval_))
     fus_cal, fus_te = ([demo.injection_score_for(t)[0] for t, _ in part] for part in (cal, eval_))
     thr_lex = calibrate_thresholds(y_cal, lex_cal)[key]
     thr_fus = calibrate_thresholds(y_cal, fus_cal)[key]
+    print(f"baselines in {_time.perf_counter() - _t0:.1f}s")
 
     # ============================================================ metrics
     results: dict = {
