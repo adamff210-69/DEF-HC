@@ -106,7 +106,7 @@ canonical reproduction command):
 python scripts/benchmark_classifier.py \
   --dataset slp-train.jsonl spml-train.jsonl \
   --eval-file pi-test.jsonl --cal-file slp-cal.jsonl \
-  --class-balance --target-recall 0.98 --epochs 400 \
+  --target-recall 0.98 \
   --out-weights weights/bge-final.json --out-metrics bench-metrics-final.json
 ```
 

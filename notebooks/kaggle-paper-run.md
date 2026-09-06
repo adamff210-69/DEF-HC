@@ -76,7 +76,7 @@ Trained on S-Labs + SPML **train** splits only. HC-Bench is never trained on.
               /kaggle/working/bench-data/spml-train.jsonl \
     --cal-file /kaggle/working/bench-data/slp-cal.jsonl \
     --eval-file /kaggle/working/bench-data/pi-test.jsonl \
-    --target-recall 0.98 --epochs 400 \
+    --target-recall 0.98 \
     --out-weights /kaggle/working/weights/bge-final.json \
     --out-metrics /kaggle/working/bench-out/bench-metrics-final.json \
     --out-scores  /kaggle/working/bench-out/scores-final.jsonl
