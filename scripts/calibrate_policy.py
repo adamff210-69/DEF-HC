@@ -26,6 +26,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # allow bare run
 
 from defend_hc2.modeling import environment_block, git_commit
 
+#: Past this benign FPR a policy is not an operating point, it is a shrug.
+#: Used to reject "reachable but useless" solutions in recall-target mode.
+_DEGENERATE_FPR = 0.5
+
 _ACTIONS = ("ALLOW", "SANITIZE_AND_ALLOW", "QUARANTINE", "REJECT")
 _DEFAULT_SANITIZE = [0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60]
 _DEFAULT_QUARANTINE = [0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
@@ -44,6 +48,44 @@ def action_for(risk: float, sanitize: float, quarantine: float, reject: float) -
 
 def sweep_grid(san=_DEFAULT_SANITIZE, quar=_DEFAULT_QUARANTINE, rej=_DEFAULT_REJECT):
     return [(s, q, r) for s in san for q in quar for r in rej if s < q < r]
+
+
+def sweep_grid_from_scores(risks, n: int = 80):
+    """Candidate bands drawn from the observed score distribution.
+
+    A hardcoded ladder silently truncates the operating curve: if the best
+    point lands on the highest sanitize value in the list, the real optimum
+    is somewhere above it and simply was never searched.  That is not a
+    hypothetical -- the first widened grid put the entire achievable
+    frontier at its own ceiling.
+
+    Detection is ``action != ALLOW``, i.e. ``risk >= sanitize``, so recall,
+    precision and benign FPR are functions of the sanitize threshold alone.
+    Sanitize candidates are therefore taken as quantiles of the actual
+    scores, which makes the frontier exact and bounded by the data instead
+    of by a constant.  Quarantine and reject are placed at higher quantiles
+    so the three-band contract (``s < q < r``) still holds; they shape the
+    action mix, not the detection metrics.
+    """
+    xs = sorted({round(float(r), 6) for r in risks})
+    if len(xs) < 3:
+        return sweep_grid()
+    idx = sorted({int(i * (len(xs) - 1) / (n - 1)) for i in range(n)})
+    cands = sorted({xs[i] for i in idx})
+    out: list[tuple[float, float, float]] = []
+    for s in cands:
+        upper = [v for v in cands if v > s]
+        if len(upper) >= 3:
+            q, r = upper[len(upper) // 3], upper[2 * len(upper) // 3]
+        elif len(upper) == 2:
+            q, r = upper[0], upper[1]
+        elif len(upper) == 1:
+            q, r = upper[0], min(1.0, upper[0] + 1e-3)
+        else:
+            q, r = min(1.0, s + 1e-3), min(1.0, s + 2e-3)
+        if s < q < r:
+            out.append((s, q, r))
+    return out or sweep_grid()
 
 
 def detection_metrics(gold: list[int], actions: list[str]) -> dict:
@@ -90,21 +132,31 @@ def select_policy(
     fallback silently reported as a solution is how a degenerate operating
     point reaches a results table.
     """
-    grid = grid or sweep_grid()
+    grid = grid or sweep_grid_from_scores(risks)
     scored = [(bands, detection_metrics(gold, [action_for(r, *bands) for r in risks]))
               for bands in grid]
 
     def _frontier(n=10):
-        """Best attainable (FPR, recall) points, so an infeasible request can
-        be answered with what IS reachable instead of just 'no'."""
-        seen, out = set(), []
-        for b, m in sorted(scored, key=lambda x: (x[1]["benign_fpr"],
-                                                  -x[1]["recall"])):
+        """The achievable operating curve, spread across FPR levels.
+
+        Listing the n lowest-FPR points just enumerates the corner where the
+        policy detects almost nothing.  What a caller actually needs is the
+        trade-off: at each FPR level they might accept, the best recall
+        available.  Sorted ascending by FPR so the safest point is first.
+        """
+        levels = (0.005, 0.01, 0.02, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 1.0)
+        out, seen = [], set()
+        for lvl in levels:
+            ok = [(b, m) for b, m in scored if m["benign_fpr"] <= lvl + 1e-9]
+            if not ok:
+                continue
+            b, m = max(ok, key=lambda x: (x[1]["recall"], -x[1]["benign_fpr"]))
             key = (m["benign_fpr"], m["recall"])
             if key in seen:
                 continue
             seen.add(key)
-            out.append({"bands": list(b), "benign_fpr": m["benign_fpr"],
+            out.append({"bands": [round(x, 4) for x in b],
+                        "benign_fpr": m["benign_fpr"],
                         "recall": m["recall"], "precision": m["precision"]})
             if len(out) >= n:
                 break
@@ -135,6 +187,24 @@ def select_policy(
     if ok:
         bands, m = max(ok, key=lambda x: (x[1]["precision"], -x[1]["benign_fpr"],
                                           x[0][2], x[0][1], x[0][0]))
+        # With candidate bands drawn from the score distribution, a high
+        # recall target is almost always *reachable* -- by sliding the
+        # threshold under the benign mass.  Reachable is not the same as
+        # usable: past this much benign FPR the policy is a shrug, so it is
+        # reported as unmet rather than as a solution.
+        if (m["benign_fpr"] or 0) >= _DEGENERATE_FPR:
+            return {"bands": bands, "metrics": m, "feasible": False,
+                    "objective": objective,
+                    "achievable_frontier": _frontier(),
+                    "note": (f"DEGENERATE: recall >= {target_recall} is only "
+                             f"reachable by flagging "
+                             f"{m['benign_fpr']:.0%} of benign traffic "
+                             f"(precision {m['precision']}). The target "
+                             f"exceeds what this model can deliver on this "
+                             f"split. Use --fpr-budget or --auto-budget for "
+                             f"a bounded operating point, and/or "
+                             f"--exclude-category for classes outside the "
+                             f"model's domain.")}
         return {"bands": bands, "metrics": m, "feasible": True,
                 "objective": objective,
                 "note": f"{objective} (calibration data)"}

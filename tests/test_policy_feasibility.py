@@ -39,19 +39,27 @@ def _corpus(seed: int = 0):
     return risks, gold, cats
 
 
+#: Markers that mean "the objective was not met" — either the constraint is
+#: unreachable, or it is reachable only at an FPR that makes it meaningless.
+UNMET = ("INFEASIBLE", "DEGENERATE", "UNMET")
+
+
 def test_unreachable_recall_target_is_reported_infeasible():
     risks, gold, _ = _corpus()
     sel = select_policy(risks, gold, target_recall=0.95)
     assert sel["feasible"] is False
-    assert "INFEASIBLE" in sel["note"]
+    assert any(k in sel["note"] for k in UNMET)
 
 
 def test_infeasible_result_states_what_was_attainable():
-    """The note must be actionable, not just negative."""
+    """The note must be actionable, not just negative: it has to say what
+    the cost of the request was, and how to ask for something reachable."""
     risks, gold, _ = _corpus()
     sel = select_policy(risks, gold, target_recall=0.95)
-    assert str(sel["metrics"]["recall"]) in sel["note"]
+    assert any(k in sel["note"] for k in UNMET)
     assert "fpr-budget" in sel["note"]
+    # the actual price of the unreachable request is quoted
+    assert "benign" in sel["note"]
 
 
 def test_feasible_target_is_marked_feasible():
@@ -60,7 +68,7 @@ def test_feasible_target_is_marked_feasible():
     sel = select_policy([risks[i] for i in keep], [gold[i] for i in keep],
                         target_recall=0.95)
     assert sel["feasible"] is True
-    assert "INFEASIBLE" not in sel["note"]
+    assert not any(k in sel["note"] for k in UNMET)
 
 
 def test_dropping_out_of_domain_class_restores_a_usable_operating_point():
@@ -134,3 +142,42 @@ def test_every_result_carries_the_feasibility_contract():
         assert isinstance(sel["feasible"], bool)
         assert len(sel["bands"]) == 3
         assert sel["bands"][0] < sel["bands"][1] < sel["bands"][2]
+
+
+def test_candidate_bands_are_not_capped_by_a_hardcoded_ladder():
+    """The bug this locks down bit twice.
+
+    With a fixed sanitize ladder the whole achievable frontier landed on the
+    ladder's own top value, which means the real optimum was above it and
+    was never searched.  Candidates must come from the score distribution,
+    so the reachable FPR floor is a property of the model, not of a
+    constant in this file.
+    """
+    from scripts.calibrate_policy import sweep_grid, sweep_grid_from_scores
+
+    risks, gold, _ = _corpus()
+    fixed_max = max(b[0] for b in sweep_grid())
+    derived = sweep_grid_from_scores(risks)
+    assert max(b[0] for b in derived) > fixed_max
+    assert all(s < q < r for s, q, r in derived)
+
+
+def test_tight_budget_reachable_when_the_scores_support_it():
+    """A budget must fail because the model cannot meet it, never because
+    the search space stopped short."""
+    risks, gold, cats = _corpus()
+    keep = [i for i, c in enumerate(cats) if c != "harmful-content"]
+    sel = select_policy([risks[i] for i in keep], [gold[i] for i in keep],
+                        fpr_budget=0.01)
+    assert sel["feasible"] is True
+    assert sel["metrics"]["benign_fpr"] <= 0.01 + 1e-9
+
+
+def test_frontier_spans_the_tradeoff_not_just_the_safe_corner():
+    """Ten variations of 'detect almost nothing' is not a useful answer."""
+    risks, gold, _ = _corpus()
+    front = select_policy(risks, gold, fpr_budget=-1.0)["achievable_frontier"]
+    recalls = [f["recall"] for f in front]
+    assert max(recalls) - min(recalls) > 0.3, "frontier must show a trade-off"
+    fprs = [f["benign_fpr"] for f in front]
+    assert fprs == sorted(fprs)
