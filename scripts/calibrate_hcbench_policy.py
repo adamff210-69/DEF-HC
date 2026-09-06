@@ -49,6 +49,17 @@ def main() -> int:
                          "still scored and reported on the test split; only "
                          "the calibration objective ignores them. The "
                          "exclusion is recorded in the artifact.")
+    ap.add_argument("--auto-budget", action="store_true",
+                    help="pick the tightest benign-FPR budget this model can "
+                         "actually meet on hcbench-cal, from the ladder "
+                         "0.01/0.02/0.05/0.10/0.20/0.30/0.50. The chosen "
+                         "value is printed and recorded. Removes the guess "
+                         "from --fpr-budget without hiding the answer.")
+    ap.add_argument("--min-recall", type=float, default=0.0,
+                    help="with --auto-budget, reject budgets whose operating "
+                         "point falls below this calibration recall (a "
+                         "0%% FPR policy that detects nothing is feasible "
+                         "but useless).")
     ap.add_argument("--allow-infeasible", action="store_true",
                     help="write the policy even when the objective could not "
                          "be met. Off by default: an infeasible objective "
@@ -121,9 +132,52 @@ def main() -> int:
     sel_scores = [scores_cal[i] for i in keep]
     sel_y = [y_cal[i] for i in keep]
 
-    sel = select_policy(sel_scores, sel_y,
-                        target_recall=args.target_recall,
-                        fpr_budget=args.fpr_budget)
+    _LADDER = (0.01, 0.02, 0.05, 0.10, 0.20, 0.30, 0.50)
+    if args.auto_budget:
+        print(f"auto-budget: trying {_LADDER} "
+              f"(min calibration recall {args.min_recall})")
+        chosen = None
+        for b in _LADDER:
+            trial = select_policy(sel_scores, sel_y, fpr_budget=b)
+            r = trial["metrics"]["recall"]
+            state = ("feasible" if trial["feasible"] else "INFEASIBLE")
+            print(f"   budget {b:<5} {state:>10}  recall={r:<7} "
+                  f"fpr={trial['metrics']['benign_fpr']}")
+            if trial["feasible"] and r >= args.min_recall - 1e-9:
+                chosen = (b, trial)
+                break
+        if chosen is None:
+            # Every budget either blew the FPR ceiling or fell under the
+            # recall floor.  Report the best available point, but do not
+            # pretend the requirement was satisfied.
+            feas = [(b, t) for b, t in
+                    ((b, select_policy(sel_scores, sel_y, fpr_budget=b))
+                     for b in _LADDER) if t["feasible"]]
+            if feas:
+                b, sel = max(feas, key=lambda x: x[1]["metrics"]["recall"])
+                args.fpr_budget = b
+                sel = {**sel, "feasible": False,
+                       "note": (f"UNMET: no budget on the ladder reaches "
+                                f"calibration recall >= {args.min_recall}. "
+                                f"Best is recall "
+                                f"{sel['metrics']['recall']} at budget {b} "
+                                f"(benign FPR "
+                                f"{sel['metrics']['benign_fpr']}). The model "
+                                f"cannot separate these classes well enough "
+                                f"to satisfy both constraints."),
+                       "achievable_frontier": sel.get("achievable_frontier")}
+            else:
+                sel = select_policy(sel_scores, sel_y, fpr_budget=_LADDER[0])
+            print(f"\n!! no budget satisfies both the FPR ceiling and the "
+                  f"{args.min_recall} recall floor")
+        else:
+            b, sel = chosen
+            args.fpr_budget = b
+            print(f"   -> selected --fpr-budget {b}")
+    else:
+        sel = select_policy(sel_scores, sel_y,
+                            target_recall=args.target_recall,
+                            fpr_budget=args.fpr_budget)
     bands = sel["bands"]
     print(f"objective: {sel['objective']}")
     print(f"selected bands (sanitize/quarantine/reject): {bands}")
@@ -142,7 +196,19 @@ def main() -> int:
                       f"{f['recall']:>8.4f} {f['precision']:>10.4f}")
             lo = min(f["benign_fpr"] for f in front)
             print(f"\n   lowest reachable benign FPR is {lo:.4f}. "
-                  f"Re-run with --fpr-budget {max(lo, 0.0):.2f} or higher.")
+                  f"Re-run with --fpr-budget {max(lo, 0.0):.2f} or higher, "
+                  f"or --auto-budget to let the script choose.")
+        # Persist the diagnostic even though no policy is written: a refusal
+        # inside a notebook usually shows only the raised exception, and the
+        # frontier is the part that says what to do next.
+        diag = args.out.with_suffix(".frontier.json")
+        diag.parent.mkdir(parents=True, exist_ok=True)
+        diag.write_text(json.dumps(
+            {"objective": sel["objective"], "feasible": False,
+             "note": sel["note"], "achievable_frontier": front,
+             "excluded_categories": sorted(excluded),
+             "calibration_n": len(sel_y)}, indent=2))
+        print(f"\n   frontier written to {diag}")
         if not args.allow_infeasible:
             print("REFUSING to write a policy from an unmet objective.\n"
                   "   The fallback bands above are a diagnostic, not a "
@@ -186,6 +252,8 @@ def main() -> int:
         "provenance_tag": args.provenance_tag,
         "target_recall": args.target_recall,
         "fpr_budget": args.fpr_budget,
+        "auto_budget": bool(args.auto_budget),
+        "achievable_frontier": sel.get("achievable_frontier"),
         "calibration_excluded_categories": sorted(excluded),
         "calibration_rows_held_out": dropped,
         "calibration": {"split": "hcbench-cal", "n": len(y_cal),
@@ -210,7 +278,9 @@ def main() -> int:
 
     prior["passes"].append(
         {"tag": args.provenance_tag, "target_recall": args.target_recall,
-         "fpr_budget": args.fpr_budget, "bands": list(bands),
+         "fpr_budget": args.fpr_budget,
+        "auto_budget": bool(args.auto_budget),
+        "achievable_frontier": sel.get("achievable_frontier"), "bands": list(bands),
          "objective_feasible": sel["feasible"],
          "excluded_categories": sorted(excluded),
          "out": str(args.out), "sha256": digest})

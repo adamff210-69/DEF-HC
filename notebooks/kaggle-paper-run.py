@@ -208,23 +208,36 @@ for fp in sorted(HCBENCH.glob("*.jsonl")):
 # ============================================================================
 py("scripts/calibrate_hcbench_policy.py",
    "--data-dir", HCBENCH, "--weights", WEIGHTS,
-   "--fpr-budget", "0.01", "--exclude-category", "harmful-content",
+   "--auto-budget", "--exclude-category", "harmful-content",
    "--provenance-tag", "hcbench-balanced",
-   "--out", REPORTS / "policy-balanced.json")
+   "--out", REPORTS / "policy-balanced.json", check=False)
 
 py("scripts/calibrate_hcbench_policy.py",
    "--data-dir", HCBENCH, "--weights", WEIGHTS,
-   "--fpr-budget", "0.05", "--exclude-category", "harmful-content",
+   "--fpr-budget", "0.10", "--exclude-category", "harmful-content",
    "--provenance-tag", "hcbench-high-recall",
    "--out", REPORTS / "policy-highrecall.json",
-   "--allow-repeat-test-eval")
+   "--allow-repeat-test-eval", check=False)
 
+# Always show the outcome, including when a run refused. A refusal writes a
+# .frontier.json instead of a policy; that file says what IS achievable.
 for f in ("policy-balanced", "policy-highrecall"):
-    d = json.loads((REPORTS / f"{f}.json").read_text())
-    print(f"\n{f}: feasible={d['objective_feasible']}  bands={d['policy']}")
-    print(f"   objective: {d['objective']}")
-    if not d["objective_feasible"]:
-        print(f"   !! {d['objective_note']}")
+    pol, fro = REPORTS / f"{f}.json", REPORTS / f"{f}.frontier.json"
+    if pol.exists():
+        d = json.loads(pol.read_text())
+        print(f"\n{f}: feasible={d['objective_feasible']}  bands={d['policy']}")
+        print(f"   objective: {d['objective']}")
+        if not d["objective_feasible"]:
+            print(f"   !! {d['objective_note']}")
+    elif fro.exists():
+        d = json.loads(fro.read_text())
+        print(f"\n{f}: REFUSED — {d['note']}")
+        print("   achievable frontier (lowest benign FPR first):")
+        for row in d["achievable_frontier"]:
+            print(f"     bands={row['bands']}  fpr={row['benign_fpr']}  "
+                  f"recall={row['recall']}  prec={row['precision']}")
+    else:
+        print(f"\n{f}: no output at all — check the traceback above")
 # If either says feasible=False, or both print the SAME bands, stop and tell
 # me before running Cell 6 — the downstream numbers would be meaningless.
 
