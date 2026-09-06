@@ -93,10 +93,26 @@ def test_fpr_budget_never_selects_a_flag_everything_policy():
 
 def test_impossible_fpr_budget_falls_back_to_lowest_fpr_not_highest_recall():
     risks, gold, _ = _corpus()
-    sel = select_policy(risks, gold, fpr_budget=0.0)
+    # The grid can genuinely reach 0.0 benign FPR, so a negative budget is
+    # used here to exercise the unreachable branch.
+    sel = select_policy(risks, gold, fpr_budget=-1.0)
     assert sel["feasible"] is False
     every = select_policy(risks, gold, target_recall=0.95)   # recall-first
     assert sel["metrics"]["benign_fpr"] < every["metrics"]["benign_fpr"]
+
+
+def test_infeasible_result_reports_what_is_achievable():
+    """'No' is not an actionable answer: the caller needs the frontier."""
+    risks, gold, _ = _corpus()
+    for sel in (select_policy(risks, gold, fpr_budget=-1.0),
+                select_policy(risks, gold, target_recall=0.95)):
+        front = sel.get("achievable_frontier")
+        assert front, "infeasible result must carry an achievable frontier"
+        assert all({"bands", "benign_fpr", "recall", "precision"} <= set(f)
+                   for f in front)
+        # sorted by ascending benign FPR so the first row is the safest point
+        fprs = [f["benign_fpr"] for f in front]
+        assert fprs == sorted(fprs)
 
 
 def test_distinct_budgets_do_not_all_collapse_to_one_policy():

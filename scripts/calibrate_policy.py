@@ -27,9 +27,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # allow bare run
 from defend_hc2.modeling import environment_block, git_commit
 
 _ACTIONS = ("ALLOW", "SANITIZE_AND_ALLOW", "QUARANTINE", "REJECT")
-_DEFAULT_SANITIZE = [0.15, 0.20, 0.25, 0.30]
-_DEFAULT_QUARANTINE = [0.40, 0.45, 0.50, 0.55]
-_DEFAULT_REJECT = [0.70, 0.75, 0.80, 0.85]
+_DEFAULT_SANITIZE = [0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60]
+_DEFAULT_QUARANTINE = [0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
+_DEFAULT_REJECT = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
 
 
 def action_for(risk: float, sanitize: float, quarantine: float, reject: float) -> str:
@@ -94,6 +94,22 @@ def select_policy(
     scored = [(bands, detection_metrics(gold, [action_for(r, *bands) for r in risks]))
               for bands in grid]
 
+    def _frontier(n=10):
+        """Best attainable (FPR, recall) points, so an infeasible request can
+        be answered with what IS reachable instead of just 'no'."""
+        seen, out = set(), []
+        for b, m in sorted(scored, key=lambda x: (x[1]["benign_fpr"],
+                                                  -x[1]["recall"])):
+            key = (m["benign_fpr"], m["recall"])
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"bands": list(b), "benign_fpr": m["benign_fpr"],
+                        "recall": m["recall"], "precision": m["precision"]})
+            if len(out) >= n:
+                break
+        return out
+
     if fpr_budget is not None:
         objective = f"max recall s.t. benign FPR <= {fpr_budget}"
         ok = [(b, m) for b, m in scored if m["benign_fpr"] <= fpr_budget + 1e-9]
@@ -108,9 +124,11 @@ def select_policy(
         bands, m = min(scored, key=lambda x: (x[1]["benign_fpr"], -x[1]["recall"]))
         return {"bands": bands, "metrics": m, "feasible": False,
                 "objective": objective,
+                "achievable_frontier": _frontier(),
                 "note": (f"INFEASIBLE: no policy achieves benign FPR <= "
-                         f"{fpr_budget}; fell back to the lowest-FPR policy "
-                         f"(FPR {m['benign_fpr']}, recall {m['recall']})")}
+                         f"{fpr_budget}; the lowest reachable benign FPR on "
+                         f"this grid is {m['benign_fpr']} "
+                         f"(recall {m['recall']})")}
 
     objective = f"max precision s.t. recall >= {target_recall}"
     ok = [(b, m) for b, m in scored if m["recall"] >= target_recall - 1e-9]
@@ -130,6 +148,7 @@ def select_policy(
     bands, m = max(scored, key=lambda x: (x[1]["recall"], -x[1]["benign_fpr"]))
     return {"bands": bands, "metrics": m, "feasible": False,
             "objective": objective,
+            "achievable_frontier": _frontier(),
             "note": (f"INFEASIBLE: recall >= {target_recall} unreachable on "
                      f"this calibration split; best attainable recall is "
                      f"{m['recall']} at benign FPR {m['benign_fpr']}. "

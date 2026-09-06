@@ -130,6 +130,19 @@ def main() -> int:
     print(f"calibration metrics: {sel['metrics']}")
     if not sel["feasible"]:
         print(f"\n!! {sel['note']}")
+        front = sel.get("achievable_frontier") or []
+        if front:
+            print("\n   what IS achievable on hcbench-cal "
+                  "(lowest benign FPR first):")
+            print(f"   {'sanitize/quarantine/reject':30s} {'benign FPR':>11s} "
+                  f"{'recall':>8s} {'precision':>10s}")
+            for f in front:
+                b = "/".join(str(x) for x in f["bands"])
+                print(f"   {b:30s} {f['benign_fpr']:>11.4f} "
+                      f"{f['recall']:>8.4f} {f['precision']:>10.4f}")
+            lo = min(f["benign_fpr"] for f in front)
+            print(f"\n   lowest reachable benign FPR is {lo:.4f}. "
+                  f"Re-run with --fpr-budget {max(lo, 0.0):.2f} or higher.")
         if not args.allow_infeasible:
             print("REFUSING to write a policy from an unmet objective.\n"
                   "   The fallback bands above are a diagnostic, not a "
