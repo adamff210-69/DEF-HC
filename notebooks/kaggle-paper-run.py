@@ -109,20 +109,42 @@ for fp in sorted(HCBENCH.glob("*.jsonl")):
 
 # ============================================================================
 # %% Cell 5 — calibrate both policies on hcbench-cal
+#
+# Objective = max recall subject to a benign-FPR budget. This is bounded by
+# construction. Do NOT go back to --target-recall 0.95/0.98 here: those are
+# unreachable for this model on this benchmark, and an unmet recall target
+# selects a fallback operating point that flags most benign traffic.
+# The script now refuses to write such a policy unless --allow-infeasible.
+#
+# harmful-content is held out of BAND SELECTION as declared out-of-domain:
+# the model is an injection/jailbreak detector. Those rows are still scored
+# and still reported on the test split — only the calibration objective
+# ignores them, and the artifact records the exclusion.
+#
 # The 2nd call needs --allow-repeat-test-eval: the one-shot ledger is shared
-# per output dir, so the 1st run already marked test as read. Recorded
-# honestly in the artifact as hcbench_test_pass_number: 2.
+# per output dir, so the 1st run already marked test as read.
 # ============================================================================
 py("scripts/calibrate_hcbench_policy.py",
    "--data-dir", HCBENCH, "--weights", WEIGHTS,
-   "--target-recall", "0.95", "--provenance-tag", "hcbench-balanced",
+   "--fpr-budget", "0.01", "--exclude-category", "harmful-content",
+   "--provenance-tag", "hcbench-balanced",
    "--out", REPORTS / "policy-balanced.json")
 
 py("scripts/calibrate_hcbench_policy.py",
    "--data-dir", HCBENCH, "--weights", WEIGHTS,
-   "--target-recall", "0.98", "--provenance-tag", "hcbench-high-recall",
+   "--fpr-budget", "0.05", "--exclude-category", "harmful-content",
+   "--provenance-tag", "hcbench-high-recall",
    "--out", REPORTS / "policy-highrecall.json",
    "--allow-repeat-test-eval")
+
+for f in ("policy-balanced", "policy-highrecall"):
+    d = json.loads((REPORTS / f"{f}.json").read_text())
+    print(f"\n{f}: feasible={d['objective_feasible']}  bands={d['policy']}")
+    print(f"   objective: {d['objective']}")
+    if not d["objective_feasible"]:
+        print(f"   !! {d['objective_note']}")
+# If either says feasible=False, or both print the SAME bands, stop and tell
+# me before running Cell 6 — the downstream numbers would be meaningless.
 
 
 # ============================================================================

@@ -69,36 +69,73 @@ def select_policy(
     gold: list[int],
     target_recall: float = 0.95,
     grid=None,
+    fpr_budget: float | None = None,
 ) -> dict:
-    """Predeclared objective: maximize detection PRECISION subject to
-    detection recall >= target.  Ties broken by lowest benign FPR, then by
-    the most conservative (highest) bands.  Degenerate policies that flag
-    everything are implicitly avoided by the precision term."""
+    """Choose operating bands under a predeclared objective.
+
+    Two objectives are supported and the choice is recorded in the result:
+
+    ``recall-target`` (default)
+        Maximize detection PRECISION subject to recall >= ``target_recall``.
+
+    ``fpr-budget`` (when ``fpr_budget`` is not None)
+        Maximize detection RECALL subject to benign FPR <= ``fpr_budget``.
+        Use this when the recall target is not attainable on the corpus: it
+        is bounded by construction and cannot select a flag-everything
+        policy, whereas a recall-first fallback can and does.
+
+    The returned dict always carries ``feasible``.  When it is ``False`` the
+    constraint could not be met by any policy on the grid and the bands are
+    a *fallback*, not a solution.  Callers must propagate that flag; a
+    fallback silently reported as a solution is how a degenerate operating
+    point reaches a results table.
+    """
     grid = grid or sweep_grid()
-    best = None
-    for bands in grid:
-        actions = [action_for(risk, *bands) for risk in risks]
-        m = detection_metrics(gold, actions)
-        if m["recall"] < target_recall - 1e-9:
-            continue
-        key = (m["precision"], -m["benign_fpr"], bands[2], bands[1], bands[0])
-        if best is None or key > best[0]:
-            best = (key, bands, m)
-    if best is None:
-        # fallback: lowest-FPR policy reaching highest achievable recall
-        feasible = None
-        for bands in grid:
-            actions = [action_for(risk, *bands) for risk in risks]
-            m = detection_metrics(gold, actions)
-            key = (m["recall"], -m["benign_fpr"])
-            if feasible is None or key > feasible[0]:
-                feasible = (key, bands, m)
-        _, bands, m = feasible
-        return {"bands": bands, "metrics": m, "note":
-                "target recall infeasible; picked highest-recall lowest-FPR policy"}
-    _, bands, m = best
-    return {"bands": bands, "metrics": m, "note":
-            f"max precision s.t. recall >= {target_recall} (calibration data)"}
+    scored = [(bands, detection_metrics(gold, [action_for(r, *bands) for r in risks]))
+              for bands in grid]
+
+    if fpr_budget is not None:
+        objective = f"max recall s.t. benign FPR <= {fpr_budget}"
+        ok = [(b, m) for b, m in scored if m["benign_fpr"] <= fpr_budget + 1e-9]
+        if ok:
+            bands, m = max(ok, key=lambda x: (x[1]["recall"], x[1]["precision"],
+                                              x[0][2], x[0][1], x[0][0]))
+            return {"bands": bands, "metrics": m, "feasible": True,
+                    "objective": objective,
+                    "note": f"{objective} (calibration data)"}
+        # No policy respects the budget: the least-bad point is the lowest
+        # FPR available.  Still a fallback -- flagged as such.
+        bands, m = min(scored, key=lambda x: (x[1]["benign_fpr"], -x[1]["recall"]))
+        return {"bands": bands, "metrics": m, "feasible": False,
+                "objective": objective,
+                "note": (f"INFEASIBLE: no policy achieves benign FPR <= "
+                         f"{fpr_budget}; fell back to the lowest-FPR policy "
+                         f"(FPR {m['benign_fpr']}, recall {m['recall']})")}
+
+    objective = f"max precision s.t. recall >= {target_recall}"
+    ok = [(b, m) for b, m in scored if m["recall"] >= target_recall - 1e-9]
+    if ok:
+        bands, m = max(ok, key=lambda x: (x[1]["precision"], -x[1]["benign_fpr"],
+                                          x[0][2], x[0][1], x[0][0]))
+        return {"bands": bands, "metrics": m, "feasible": True,
+                "objective": objective,
+                "note": f"{objective} (calibration data)"}
+
+    # Recall target unreachable.  The old fallback maximized recall first,
+    # which drives straight to the most aggressive bands on the grid and
+    # yields a flag-everything policy with a huge benign FPR -- and, because
+    # every infeasible target lands on the same point, it also makes two
+    # different targets produce identical policies.  Report the best
+    # attainable recall for diagnosis, but mark the result infeasible.
+    bands, m = max(scored, key=lambda x: (x[1]["recall"], -x[1]["benign_fpr"]))
+    return {"bands": bands, "metrics": m, "feasible": False,
+            "objective": objective,
+            "note": (f"INFEASIBLE: recall >= {target_recall} unreachable on "
+                     f"this calibration split; best attainable recall is "
+                     f"{m['recall']} at benign FPR {m['benign_fpr']}. "
+                     f"Re-run with --fpr-budget for a bounded operating "
+                     f"point, and/or exclude out-of-domain categories from "
+                     f"band selection.")}
 
 
 def run_rows(engine, rows: list[dict]) -> list[dict]:

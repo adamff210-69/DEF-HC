@@ -38,6 +38,21 @@ def main() -> int:
                     help="omit for a heuristic-mode smoke run")
     ap.add_argument("--target-recall", type=float, default=0.95)
     ap.add_argument("--provenance-tag", default="hcbench-balanced")
+    ap.add_argument("--fpr-budget", type=float, default=None,
+                    help="switch the objective to: maximize recall subject "
+                         "to benign FPR <= this value. Bounded by "
+                         "construction; use when --target-recall is not "
+                         "attainable on the corpus.")
+    ap.add_argument("--exclude-category", nargs="*", default=(),
+                    help="categories held OUT of band selection as declared "
+                         "out-of-domain (e.g. harmful-content). They are "
+                         "still scored and reported on the test split; only "
+                         "the calibration objective ignores them. The "
+                         "exclusion is recorded in the artifact.")
+    ap.add_argument("--allow-infeasible", action="store_true",
+                    help="write the policy even when the objective could not "
+                         "be met. Off by default: an infeasible objective "
+                         "yields a fallback operating point, not a solution.")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--allow-repeat-test-eval", action="store_true",
                     help="hcbench-test has already been consumed by a prior "
@@ -88,11 +103,45 @@ def main() -> int:
     y_cal = [int(r["label"]) for r in cal_rows]
     scores_cal, _ = run_evaluation(cal_rows, system, "hc-bench-policycal")
 
-    sel = select_policy(scores_cal, y_cal, target_recall=args.target_recall)
+    # Band selection may deliberately ignore categories declared out of the
+    # model's domain.  Those rows stay in the test report; excluding them
+    # here only stops an out-of-domain category from dictating the operating
+    # point for the categories the system does target.
+    excluded = set(args.exclude_category or ())
+    keep = [i for i, r in enumerate(cal_rows)
+            if r.get("category") not in excluded]
+    dropped = len(cal_rows) - len(keep)
+    if excluded:
+        print(f"band selection excludes {sorted(excluded)}: "
+              f"{dropped} of {len(cal_rows)} cal rows held out "
+              f"(still reported on test)")
+        if not keep:
+            print("REFUSING: every calibration row was excluded.")
+            return 3
+    sel_scores = [scores_cal[i] for i in keep]
+    sel_y = [y_cal[i] for i in keep]
+
+    sel = select_policy(sel_scores, sel_y,
+                        target_recall=args.target_recall,
+                        fpr_budget=args.fpr_budget)
     bands = sel["bands"]
-    print(f"selected bands (sanitize/quarantine/reject): {bands}  "
-          f"[{sel['note']}]")
+    print(f"objective: {sel['objective']}")
+    print(f"selected bands (sanitize/quarantine/reject): {bands}")
     print(f"calibration metrics: {sel['metrics']}")
+    if not sel["feasible"]:
+        print(f"\n!! {sel['note']}")
+        if not args.allow_infeasible:
+            print("REFUSING to write a policy from an unmet objective.\n"
+                  "   The fallback bands above are a diagnostic, not a "
+                  "calibrated operating point; anything measured under them "
+                  "inherits the degeneracy.\n"
+                  "   Options: --fpr-budget 0.05 for a bounded point, "
+                  "--exclude-category <out-of-domain categories>, a lower "
+                  "--target-recall, or --allow-infeasible to record this "
+                  "point deliberately.")
+            return 3
+        print("   proceeding anyway (--allow-infeasible); the artifact "
+              "records feasible=false.")
 
     print(f"evaluating hcbench-test ONCE (n={len(test_rows)})…")
     y_test = [int(r["label"]) for r in test_rows]
@@ -117,11 +166,17 @@ def main() -> int:
     doc = {
         "policy": {"sanitize_at": bands[0], "quarantine_at": bands[1],
                    "reject_at": bands[2]},
-        "origin": "hcbench-cal only; bands predeclared objective "
-                  "max-precision s.t. recall target; production channels",
+        "origin": "hcbench-cal only; production channels",
+        "objective": sel["objective"],
+        "objective_feasible": sel["feasible"],
+        "objective_note": sel["note"],
         "provenance_tag": args.provenance_tag,
         "target_recall": args.target_recall,
+        "fpr_budget": args.fpr_budget,
+        "calibration_excluded_categories": sorted(excluded),
+        "calibration_rows_held_out": dropped,
         "calibration": {"split": "hcbench-cal", "n": len(y_cal),
+                        "n_used_for_band_selection": len(sel_y),
                         "base_rate": round(sum(y_cal) / len(y_cal), 4)},
         "calibration metrics": sel["metrics"],
         "hcbench_test_metrics": test_metrics,
@@ -142,6 +197,9 @@ def main() -> int:
 
     prior["passes"].append(
         {"tag": args.provenance_tag, "target_recall": args.target_recall,
+         "fpr_budget": args.fpr_budget, "bands": list(bands),
+         "objective_feasible": sel["feasible"],
+         "excluded_categories": sorted(excluded),
          "out": str(args.out), "sha256": digest})
     ledger_fp.write_text(json.dumps(prior, indent=2))
 

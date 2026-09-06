@@ -171,12 +171,33 @@ def main() -> int:
         "git_commit": git_commit(Path(__file__).resolve().parents[1]),
     }
 
+    seen_bands: dict[tuple, str] = {}
     for pol_fp in args.policies:
-        pol = json.loads(pol_fp.read_text())["policy"]
+        pol_doc = json.loads(pol_fp.read_text())
+        pol = pol_doc["policy"]
         name = pol_fp.stem
         san, qua = pol["sanitize_at"], pol["quarantine_at"]
+
+        # A policy written from an unmet calibration objective is a fallback
+        # operating point, not a calibrated one.  Surface it here too: this
+        # script is usually where the numbers get read.
+        if pol_doc.get("objective_feasible") is False:
+            print(f"!! WARNING {name}: calibration objective was NOT met "
+                  f"({pol_doc.get('objective_note', 'no note')})")
+            print("   Metrics below inherit that degenerate operating point.")
+        # Distinct targets collapsing onto identical bands means the second
+        # policy carries no information the first does not.
+        key = (san, qua, pol["reject_at"])
+        if key in seen_bands:
+            print(f"!! WARNING {name}: identical bands to "
+                  f"{seen_bands[key]} {key} — the two policies are the same "
+                  f"operating point, so comparing them measures nothing.")
+        seen_bands[key] = name
+
         block = {"bands": {"sanitize_at": san, "quarantine_at": qua,
                            "reject_at": pol["reject_at"]},
+                 "objective": pol_doc.get("objective"),
+                 "objective_feasible": pol_doc.get("objective_feasible"),
                  "overall": per_slice_report(y_eval, scores_eval, qua, san)}
         # NOTE on reading these tables: `overall.fpr@*` is computed over ALL
         # negative rows.  The per_category "benign" entry covers only rows
