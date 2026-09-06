@@ -129,13 +129,18 @@ def main() -> int:
     import time as _time
 
     import numpy as np
-    from defend_hc2.embedder import device_report, get_sentence_transformer
+    from defend_hc2.embedder import (
+        device_report,
+        get_sentence_transformer,
+        tune_cpu_threads,
+    )
 
     dev = device_report()
     print(f"\n== embedding backend ==")
     for k, v in dev.items():
         print(f"   {k}: {v}")
     if dev.get("selected_device") == "cpu":
+        print(f"   cpu threads: {tune_cpu_threads()}")
         print("   !! running on CPU. If this machine has a GPU, the accelerator\n"
               "      is not visible to torch — embedding will take minutes to\n"
               "      tens of minutes instead of seconds.")

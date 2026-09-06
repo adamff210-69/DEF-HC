@@ -15,6 +15,7 @@ except FileNotFoundError:
 print("=== torch ===")
 import torch
 print("torch            :", torch.__version__)
+print("loaded from      :", torch.__file__)
 print("built for CUDA   :", torch.version.cuda)
 print("cuda.is_available:", torch.cuda.is_available())
 print("device_count     :", torch.cuda.device_count())
@@ -23,10 +24,29 @@ if torch.cuda.is_available():
         print(f"  gpu {i}: {torch.cuda.get_device_name(i)}")
 else:
     print("\n!! torch cannot see a GPU.")
-    print("   If the sidebar says 'GPU T4 x2 On', the accelerator was attached")
-    print("   AFTER this kernel started, or a pip install replaced torch with a")
-    print("   CPU-only build. Fix: Run > Restart & clear cell outputs, then run")
-    print("   Cell 1 again. Do NOT let pip touch torch.")
+    if str(torch.__file__).startswith(("/root/.local", "/kaggle/.local")):
+        print("   torch is loading from a USER-SITE path, which means a second")
+        print("   copy (usually CPU-only, pulled in as a dependency) is")
+        print("   shadowing Kaggle's CUDA build. Fix:")
+        print("     !pip uninstall -y torch")
+        print("   then restart the kernel and re-run Cell 1.")
+    else:
+        print("   If the sidebar says 'GPU T4 x2 On', the accelerator was")
+        print("   attached AFTER this kernel started. Fix: Run > Restart &")
+        print("   clear cell outputs, then run Cell 1 again.")
+
+print("\n=== all torch copies visible on sys.path ===")
+import importlib.util, site
+seen = []
+for p in site.getsitepackages() + [site.getusersitepackages()]:
+    import os
+    cand = os.path.join(p, "torch", "__init__.py")
+    if os.path.exists(cand):
+        seen.append(cand)
+for s in seen:
+    print("  ", s, "  <-- ACTIVE" if s == torch.__file__ else "")
+if len(seen) > 1:
+    print("   !! more than one torch installed — the first on sys.path wins")
 
 print("\n=== is a CPU-only torch build installed? ===")
 print(subprocess.run([sys.executable, "-m", "pip", "list", "--format=freeze"],

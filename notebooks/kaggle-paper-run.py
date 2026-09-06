@@ -41,6 +41,33 @@ def py(*args, **kw):
     return sh(sys.executable, "-u", *args, **kw)
 
 
+def torch_probe():
+    """Inspect torch in a FRESH interpreter.
+
+    Must be a subprocess: once torch is imported into this kernel, later
+    imports return the already-loaded module and would mask a replacement
+    on disk.
+    """
+    code = (
+        "import json\n"
+        "try:\n"
+        "    import torch\n"
+        "    d = {'ok': True, 'version': torch.__version__,\n"
+        "         'file': torch.__file__, 'cuda_build': torch.version.cuda,\n"
+        "         'cuda_available': bool(torch.cuda.is_available()),\n"
+        "         'device_count': int(torch.cuda.device_count())}\n"
+        "except Exception as e:\n"
+        "    d = {'ok': False, 'error': f'{type(e).__name__}: {e}'}\n"
+        "print(json.dumps(d))\n"
+    )
+    r = subprocess.run([sys.executable, "-c", code],
+                       capture_output=True, text=True)
+    try:
+        return json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        return {"ok": False, "error": (r.stderr or r.stdout)[-400:]}
+
+
 if not pathlib.Path(ROOT, ".git").exists():
     sh("git", "clone", "--branch", BRANCH, "--single-branch", REPO, ROOT, cwd="/kaggle/working")
 else:
@@ -51,9 +78,64 @@ os.chdir(ROOT)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-# Kaggle already ships torch + transformers. Do not reinstall them.
-sh(sys.executable, "-m", "pip", "install", "-q",
-   "sentence-transformers", "datasets", "scikit-learn")
+# ---- install deps WITHOUT letting pip touch torch -------------------------
+# Kaggle ships a CUDA torch. `pip install sentence-transformers` resolves a
+# torch dependency and can install a second, CPU-only torch into the user
+# site-packages, which then shadows Kaggle's. The symptom is a job that runs
+# at 200% CPU with idle GPUs. Pin the installed version so pip cannot move it.
+before = torch_probe()
+print("torch BEFORE install:", before)
+
+if before.get("ok") and before.get("version"):
+    con = WORK / "pip-constraints.txt"
+    pins = [f"torch=={before['version']}"]
+    for extra in ("torchvision", "torchaudio"):
+        r = subprocess.run([sys.executable, "-m", "pip", "show", extra],
+                           capture_output=True, text=True).stdout
+        for line in r.splitlines():
+            if line.startswith("Version:"):
+                pins.append(f"{extra}=={line.split(':', 1)[1].strip()}")
+    con.write_text("\n".join(pins) + "\n")
+    print("pinning:", pins)
+    pip_args = ["-c", str(con)]
+else:
+    pip_args = []
+
+need = []
+for pkg, mod in (("sentence-transformers", "sentence_transformers"),
+                 ("datasets", "datasets"), ("scikit-learn", "sklearn")):
+    r = subprocess.run([sys.executable, "-c", f"import {mod}"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        need.append(pkg)
+print("missing packages:", need or "none — nothing to install")
+if need:
+    sh(sys.executable, "-m", "pip", "install", "-q", *pip_args, *need)
+
+after = torch_probe()
+print("torch AFTER install :", after)
+
+if not after.get("cuda_available"):
+    print("\n" + "!" * 72)
+    print("torch cannot see a GPU. Everything will run on CPU and Cell 3")
+    print("will take 15-45 minutes instead of 1-3.")
+    if before.get("cuda_available"):
+        print("\nCUDA worked BEFORE the install and not after -> pip replaced")
+        print("torch. Fix: Run > Factory reset, then re-run this cell.")
+    elif after.get("file", "").startswith(("/root/.local", "/kaggle/.local")):
+        print(f"\ntorch is loading from {after.get('file')} — a user-site copy")
+        print("is shadowing Kaggle's CUDA build. Remove it:")
+        print("  !pip uninstall -y torch")
+        print("then restart the kernel.")
+    else:
+        print("\nCUDA was already unavailable before installing anything.")
+        print("The accelerator is probably not attached to THIS kernel:")
+        print("  sidebar > Session options > Accelerator = GPU T4 x2,")
+        print("  then Run > Restart & clear cell outputs.")
+    print("!" * 72)
+else:
+    print(f"\nGPU OK: {after['device_count']} device(s), "
+          f"torch {after['version']} (CUDA {after['cuda_build']})")
 
 for d in (BENCH, HCBENCH, REPORTS, OUTDIR, WEIGHTS.parent):
     d.mkdir(parents=True, exist_ok=True)

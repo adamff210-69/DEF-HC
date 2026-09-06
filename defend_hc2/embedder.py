@@ -69,22 +69,55 @@ def _auto_device() -> str:
     return "cpu"
 
 
+def tune_cpu_threads() -> dict:
+    """Let torch use every available core when falling back to CPU.
+
+    torch often defaults to physical-core count or an inherited
+    OMP_NUM_THREADS, which on a 4-vCPU box shows up as ~200% CPU while two
+    cores sit idle.  Only widens the pool; never narrows it.
+    """
+    out: dict = {}
+    try:
+        import os
+
+        import torch
+        want = os.cpu_count() or 1
+        out["cpu_count"] = want
+        out["threads_before"] = torch.get_num_threads()
+        if torch.get_num_threads() < want:
+            torch.set_num_threads(want)
+        out["threads_after"] = torch.get_num_threads()
+    except ImportError:
+        out["error"] = "torch not installed"
+    except Exception as exc:  # pragma: no cover
+        out["error"] = f"{type(exc).__name__}: {exc}"[:200]
+    return out
+
+
 def device_report() -> dict:
     """Diagnostic block: what torch can actually see.
 
     Printed by the training/eval scripts so a silent CPU fallback shows up
-    in the log instead of only as elapsed time.
+    in the log instead of only as elapsed time.  ``torch_file`` matters on
+    hosted notebooks: a user-site copy shadowing the image's CUDA build is a
+    common and otherwise invisible cause of CPU-only execution.
     """
     info: dict = {"selected_device": _auto_device()}
     try:
         import torch
         info["torch_version"] = torch.__version__
+        info["torch_file"] = torch.__file__
         info["cuda_available"] = bool(torch.cuda.is_available())
         info["cuda_device_count"] = int(torch.cuda.device_count())
         info["torch_cuda_build"] = torch.version.cuda
         if info["cuda_available"]:
             info["gpu_names"] = [torch.cuda.get_device_name(i)
                                  for i in range(torch.cuda.device_count())]
+        elif str(torch.__file__).startswith(("/root/.local", "/kaggle/.local",
+                                             "/home/")):
+            info["shadowed_install_warning"] = (
+                "torch is loading from a user-site path; it may be shadowing "
+                "a CUDA build shipped with the image")
     except ImportError:
         info["torch_version"] = None
     except Exception as exc:  # pragma: no cover
