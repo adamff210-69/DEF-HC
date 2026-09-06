@@ -248,12 +248,22 @@ Reading, stated plainly:
 2. **Regime boundary (honest negative):** benign rows authored inside
    foreign *jailbreak corpora* (deepset/jackhhao "benign" — jailbreak-
    adjacent phrasing by construction) hit FPR 0.64 at the frozen
-   quarantine band.  Nothing was recalibrated to hide this; the
-   regime-matched fix is calibration on `hcbench-cal` (band provenance
-   unchanged), for which the recorded cal-derived operating point is
-   recall@0.95 → threshold 0.0035 (bench-hcbench-metrics.json).
-   Foreign-corpus benign text is a different benign regime than
-   S-Labs/SPML benign.
+   quarantine band.  We also ran the obvious cure and it **fails
+   cleanly**: band-level recalibration on `hcbench-cal`
+   (`scripts/calibrate_hcbench_policy.py`, same declared objective, both
+   recall targets 0.95 and 0.98) returns "target recall infeasible;
+   picked highest-recall lowest-FPR policy" — best band (0.15/0.40/0.70)
+   with hcbench-test (once) P 0.396 / R 0.914 / benign FPR 0.614
+   (`calibrated-policy-hcbench-{balanced,highrecall}.json`, identical
+   outcomes: the band grid floor binds).  The cause is scale, not
+   calibration hygiene: the multi-band policy operates in [0.15, 0.85],
+   while HC-Bench's attacks concentrate below 0.05 — the recorded
+   cal-derived operating point is recall@0.95 → threshold **0.0035**
+   (bench-hcbench-metrics.json).  **Regime matching is therefore a
+   threshold-level fix, not a policy-band-level fix** — a finding about
+   the policy abstraction itself. Identity options (extend the band grid
+   down, per-surface bands, raw-threshold operating mode) are design
+   decisions we list, not tuned parameters.
 3. **Surface routing matters:** benign retrieved documents almost never
    quarantine (0.005) but always trigger the sanitize strip-and-allow
    band (1.0) — unprovenanced third-party content is carried only after
