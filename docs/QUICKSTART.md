@@ -60,7 +60,7 @@ Exit code 0 = all assertions held. Add `--no-color` for plain output.
 pytest                     # 158 passed, 1 skipped (ML extra not installed)
 ```
 
-With the optional ML extra installed, all 164 tests run (see §7).
+With the optional ML extra installed, all 285 tests run (see §7).
 
 ---
 

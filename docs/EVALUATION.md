@@ -447,8 +447,9 @@ transcript *integrity* are defended by non-overlapping mechanisms.
 
 ## 5. Regression evidence
 
-164 tests pass (`pytest -q`; 6 optional tests skip without
-`requirements-ml.txt` installed).
+283 tests pass, 2 skip (`pytest -q`, full `requirements-ml.txt` installed;
+the 2 skips need Kaggle artifacts — bench-data + trained weights. Without
+the ML extra, the 6 tests in `test_ml_classifier.py` skip as well).
 
 ## 6. Artifacts
 
@@ -464,7 +465,7 @@ transcript *integrity* are defended by non-overlapping mechanisms.
 **Reproduce** (Kaggle, ~10 min):
 
 ```bash
-git clone -b arena/01a06c45-def-hc <this repo> && pip install -r requirements-ml.txt
+git clone -b arena/01a07e57-def-hc <this repo> && pip install -r requirements-ml.txt
 python scripts/benchmark_classifier.py \
   --dataset slp-train.jsonl spml-train.jsonl \
   --eval-file pi-test.jsonl --cal-file slp-cal.jsonl \

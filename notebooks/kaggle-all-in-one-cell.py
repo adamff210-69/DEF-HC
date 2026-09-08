@@ -9,7 +9,10 @@
 import os, sys, json, subprocess, importlib.util
 
 REPO    = "/kaggle/working/DEF-HC"
-BRANCH  = "arena/01a06c45-def-hc"      # implementation branch (main = README stub)
+BRANCH  = "arena/01a07e57-def-hc"      # working branch (main = README stub).
+                                       # Do NOT clone older arena/* branches:
+                                       # they predate the calibration fixes and
+                                       # reproduce the known-bad results.
 WEIGHTS = "/kaggle/working/weights/bge-logistic.json"
 DB      = "/kaggle/working/kaggle-ml.db"
 
@@ -45,13 +48,41 @@ from defend_hc2 import DEFEND_HC2, ContentRiskAnalyzer
 print("defend-hc2", __import__("defend_hc2").__version__)
 
 # ---- 4. train the bge-small classifier (ML mode) — skips if already trained --
+# Train on the REAL corpora (S-Labs + SPML), same protocol as the paper run.
+# Falling back to the bundled 30-row seed set silently was a trap: the probe
+# below then prints plausible p(injection) values from a toy classifier, and
+# every downstream number inherits it.  If the corpora cannot be fetched the
+# cell now says SMOKE TEST in capital letters and refuses to look like a result.
 os.makedirs(os.path.dirname(WEIGHTS), exist_ok=True)
+BENCH_DATA = "/kaggle/working/bench-data"
 if os.path.exists(WEIGHTS):
     print("weights exist, skipping training:", WEIGHTS)
 else:
-    print("training bge-small logistic classifier (~2-4 min incl. one-time download)...")
-    r = sh(["python", f"{REPO}/scripts/train_classifier.py", "--out", WEIGHTS, "--epochs", "300"])
-    print("\n".join(r.stdout.splitlines()[-8:]))
+    print("fetching benchmark corpora (S-Labs + SPML official splits)...")
+    prep = subprocess.run(
+        ["python", f"{REPO}/scripts/prepare_benchmarks.py",
+         "--out-dir", BENCH_DATA], capture_output=True, text=True)
+    if prep.returncode == 0 and os.path.exists(f"{BENCH_DATA}/slp-train.jsonl"):
+        print("training on real corpora (~3-6 min incl. one-time model download)...")
+        r = sh(["python", f"{REPO}/scripts/benchmark_classifier.py",
+                "--dataset", f"{BENCH_DATA}/slp-train.jsonl",
+                           f"{BENCH_DATA}/spml-train.jsonl",
+                "--cal-file", f"{BENCH_DATA}/slp-cal.jsonl",
+                "--eval-file", f"{BENCH_DATA}/pi-test.jsonl",
+                "--target-recall", "0.98",
+                "--out-weights", WEIGHTS,
+                "--out-metrics", "/kaggle/working/bench-metrics-final.json"])
+        print("\n".join(r.stdout.splitlines()[-8:]))
+    else:
+        print(prep.stdout[-800:]); print(prep.stderr[-800:])
+        print("\n" + "!" * 72)
+        print("!! SMOKE TEST — NOT RESULTS !!")
+        print("!! Corpora unavailable; training on the bundled 30-row seed set.")
+        print("!! The p(injection) probes below come from a TOY classifier:")
+        print("!! they only prove the pipeline RUNS. Do not read them as")
+        print("!! model quality. Re-run with Internet ON for real weights.")
+        print("!" * 72)
+        r = sh(["python", f"{REPO}/scripts/train_classifier.py", "--out", WEIGHTS])
 
 # ---- 5. quick p(injection) probe with the ML classifier ---------------------
 analyzer = ContentRiskAnalyzer(demo_mode=False, weights_path=WEIGHTS)

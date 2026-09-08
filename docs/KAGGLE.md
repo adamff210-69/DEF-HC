@@ -24,7 +24,7 @@ Two options:
 
 | Cells | Content |
 |---|---|
-| 1–3 | environment check, clone branch `arena/01a06c45-def-hc`, install missing deps (`torch` untouched — Kaggle ships it), editable-install `defend_hc2` |
+| 1–3 | environment check, clone branch `arena/01a07e57-def-hc`, install missing deps (`torch` untouched — Kaggle ships it), editable-install `defend_hc2` |
 | 4 | sanity demo (heuristic mode) |
 | 5 | **train the bge-small logistic classifier weights** → `/kaggle/working/weights/bge-logistic.json` (~2–4 min incl. one-time ~130 MB download; skips if present) |
 | 6 | probe `p(injection)` for benign vs. injection prompts in **ML mode** |
@@ -116,7 +116,7 @@ pipeline at it with `weights_path=`, and pair it with calibrated policy bands
 
 ## Gotchas
 
-- The implementation branch is `arena/01a06c45-def-hc`; `main` is a README stub.
+- The implementation branch is `arena/01a07e57-def-hc`; `main` is a README stub.
 - **If `import defend_hc2` fails after `pip install -e` in the same kernel**:
   editable installs register at interpreter startup, so the already-running
   kernel can't see the package. Either restart the kernel once, or add

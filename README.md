@@ -44,7 +44,7 @@ pip install -r requirements.txt          # core (stdlib crypto + FastAPI + tests
 # 1. run the required demonstration (all 9 scenarios, ~1 second)
 python -m defend_hc2
 
-# 2. run the test suite (158 tests)
+# 2. run the test suite (285 tests: 283 pass; 2 skip — they need Kaggle artifacts)
 pytest
 
 # 3. run the API
@@ -219,7 +219,7 @@ scripts/evaluate_complementarity.py  # layer-coverage attack matrix evaluation
 scripts/ci/test.yml                  # CI workflow template — copy to .github/workflows/
 notebooks/defend-hc2-kaggle-ml-mode.ipynb  # ready-to-upload Kaggle notebook (ML mode)
 docs/QUICKSTART.md docs/KAGGLE.md    # step-by-step guides
-tests/                               # 164 tests across all layers + attacks + API
+tests/                               # 285 tests across all layers + attacks + API
 ```
 
 ## Research framing

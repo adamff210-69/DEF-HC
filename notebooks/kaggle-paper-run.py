@@ -12,7 +12,7 @@
 import os, sys, subprocess, pathlib, json, hashlib
 
 REPO    = "https://github.com/adamff210-69/DEF-HC.git"
-BRANCH  = "arena/01a074f1-def-hc"          # working branch, NOT main
+BRANCH  = "arena/01a07e57-def-hc"          # working branch, NOT main
 ROOT    = "/kaggle/working/DEF-HC"
 WORK    = pathlib.Path("/kaggle/working")
 
@@ -144,7 +144,7 @@ print("\nbranch:", subprocess.run(["git", "branch", "--show-current"],
       capture_output=True, text=True, cwd=ROOT).stdout.strip())
 print("commit:", subprocess.run(["git", "rev-parse", "--short", "HEAD"],
       capture_output=True, text=True, cwd=ROOT).stdout.strip())
-# MUST print arena/01a074f1-def-hc
+# MUST print arena/01a07e57-def-hc
 
 
 # ============================================================================
@@ -304,7 +304,7 @@ py("scripts/measure_overhead.py",
 
 
 # ============================================================================
-# %% Cell 9 — validation.  Expect: 250 passed, 3 skipped
+# %% Cell 9 — validation.  Expect: 283 passed, 2 skipped
 # ============================================================================
 py("-m", "pytest", "-q", check=False)
 py("scripts/evaluate_complementarity.py")

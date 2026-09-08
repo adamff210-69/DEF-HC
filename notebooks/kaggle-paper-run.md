@@ -23,7 +23,7 @@ backgrounding with `nohup &` produces an empty log because of stdout buffering.
 import os, subprocess, sys, pathlib
 
 REPO   = "https://github.com/adamff210-69/DEF-HC.git"
-BRANCH = "arena/01a074f1-def-hc"          # <- the working branch, not main
+BRANCH = "arena/01a07e57-def-hc"          # <- the working branch, not main
 ROOT   = "/kaggle/working/DEF-HC"
 
 if not pathlib.Path(ROOT).exists():
@@ -45,8 +45,9 @@ print("commit :", subprocess.run(["git","rev-parse","--short","HEAD"],
                                  capture_output=True,text=True).stdout.strip())
 ```
 
-Confirm it prints `arena/01a074f1-def-hc`. An older kernel of yours cloned the
-stale branch `arena/01a06c45-def-hc`, which does not have any of this work.
+Confirm it prints `arena/01a07e57-def-hc`. If it prints anything else
+(`main`, or an older `arena/*` branch), the clone is stale and predates the
+calibration fixes — delete `/kaggle/working/DEF-HC` and re-run Cell 1.
 
 ---
 
@@ -204,7 +205,7 @@ heuristic-mode on 2 CPU cores, so these ML-mode numbers supersede it.
 !cd /kaggle/working/DEF-HC && python -u scripts/evaluate_complementarity.py
 ```
 
-Expect `250 passed, 3 skipped`.
+Expect `283 passed, 2 skipped`.
 
 ---
 
