@@ -1,0 +1,9 @@
+# Core runtime + API (the crypto, ledger, and analyzer run on stdlib alone;
+# these are needed for the FastAPI service and the test suite).
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+
+# tests
+pytest>=8.2
+httpx>=0.27

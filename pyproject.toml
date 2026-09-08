@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "defend-hc2"
+version = "2.0.0"
+description = "Dual-layer LLM security: content-risk analysis + cryptographic session-continuity enforcement with an append-only audit ledger."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "DEF-HC research prototype" }]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+ml = ["sentence-transformers>=3.0", "torch>=2.3"]
+test = ["pytest>=8.2", "httpx>=0.27"]
+
+[project.scripts]
+defend-hc2-demo = "defend_hc2.demo:main"
+defend-hc2-api = "defend_hc2.api:main"
+defend-hc2-keygen = "defend_hc2.cli:keygen"
+
+[tool.setuptools.packages.find]
+include = ["defend_hc2*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
